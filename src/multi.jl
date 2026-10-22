@@ -3,7 +3,13 @@
 
 Several centers share the total budget `base.B`. Each center runs the single-center design
 (`Site`) on its own clients and its own share of the budget; all read their own spend from
-the one central DB (delay `base.D`), and they talk to each other with delay `net_latency`.
+the one central DB (delay `base.D`), and they talk to each other with delay `net_latency`
+(0: a message arrives at once, and a sender knows at once when the other center is down).
+
+A center can be down (`outages`, or random with `outage_mtbf`/`outage_mttr`): it issues no
+grants and sends or receives nothing, its clients keep spending their open grants until expiry,
+and it resumes with its state intact. With `takeover`, the centers that are up take over its
+free budget once all its grants have surely settled.
 
 Hard cap: each center keeps `Y_k + E_k ≤ B_k(1−δ)` and Σ B_k + (transfers in flight) = B,
 so total DB spend never exceeds B. A donor takes budget off its own B_k *before* sending it,
@@ -25,15 +31,27 @@ Base.@kwdef struct MultiConfig
     rebalance_tol::Float64 = 0.02          # donor gives only when surplus > tol × its target
     min_transfer::Float64 = 1e-4           # smaller transfers are not sent, fraction of B
     urgent_cooldown::Float64 = 15.0        # min time between urgent requests of one center [min]
-    net_latency::Float64 = 2.0             # center ↔ center message delay [min]
+    net_latency::Float64 = 0.0             # center ↔ center message delay [min]
     net_jitter::Float64 = 0.0              # extra delay, uniform in [0, net_jitter] [min]
+
+    # ---------------- outages ----------------
+    outages::Vector{Vector{Tuple{Float64,Float64}}} = [Tuple{Float64,Float64}[] for _ in names]
+                                           # per center: (start, length) of each outage [min]
+    outage_mtbf::Float64 = Inf             # random outages: mean time between outages, per center [min]
+    outage_mttr::Float64 = 240.0           # random outages: mean length (exponential) [min]
+    takeover::Bool = true                  # centers that are up take over a down center's free budget
+    takeover_after::Float64 = NaN          # never before: grants settled (NaN → τ_max + D_max + 2·dt) [min]
+    takeover_frac::Float64 = 0.1           # and not before down ≥ frac × (time left in the period)
 end
 
 function validate(mc::MultiConfig)
     K = length(mc.names)
-    all(length(v) == K for v in (mc.load, mc.load_true, mc.tz, mc.overrides)) ||
-        error("names, load, load_true, tz and overrides must have the same length")
+    all(length(v) == K for v in (mc.load, mc.load_true, mc.tz, mc.overrides, mc.outages)) ||
+        error("names, load, load_true, tz, overrides and outages must have the same length")
     isapprox(sum(mc.load), 1; atol = 1e-9) || error("load must sum to 1")
+    settle = mc.base.tau_max + d_max(mc.base)
+    isnan(mc.takeover_after) || mc.takeover_after >= settle ||
+        @warn "takeover_after < τ_max + D_max: a down center's grants may not have settled, hard cap is not guaranteed"
     mc.rebalance in (:none, :periodic, :on_demand, :both) ||
         error("rebalance must be :none, :periodic, :on_demand or :both")
     nothing
@@ -68,6 +86,7 @@ transfers have not arrived yet and does not pay the same deficit twice.
 """
 mutable struct Net
     queue::Vector{Msg}
+    up::BitVector              # up[k]: center k is running (peers know at once with zero latency)
     known::BitMatrix           # known[k, j]: k has a status from j
     R::Matrix{Float64}         # R[k, j]: j's B_j − Ŝ_j as last reported to k
     need::Matrix{Float64}      # need[k, j]: j's forecast spendable demand as last reported to k
@@ -81,25 +100,41 @@ mutable struct Net
     messages::Int
     urgent::Int
     log::Vector{Tuple{Int,Int,Int,Float64}}   # (step, from, to, amount) of every transfer
+    takeovers::Int
+    taken::Float64             # budget taken over from down centers
 end
 
-Net(K, rng) = Net(Msg[], falses(K, K), zeros(K, K), zeros(K, K), zeros(K, K), zeros(K, K),
-                  zeros(K, K, K), zeros(K, K, K), rng, 0, 0.0, 0, 0, Tuple{Int,Int,Int,Float64}[])
+Net(K, rng) = Net(Msg[], trues(K), falses(K, K), zeros(K, K), zeros(K, K), zeros(K, K), zeros(K, K),
+                  zeros(K, K, K), zeros(K, K, K), rng, 0, 0.0, 0, 0, Tuple{Int,Int,Int,Float64}[], 0, 0.0)
 
 delay(mc::MultiConfig, rng) =
-    max(1, round(Int, (mc.net_latency + (mc.net_jitter > 0 ? mc.net_jitter * rand(rng) : 0.0)) / mc.base.dt))
+    round(Int, (mc.net_latency + (mc.net_jitter > 0 ? mc.net_jitter * rand(rng) : 0.0)) / mc.base.dt)
 
+"Deliver now when the delay is zero, otherwise queue."
+function post!(net::Net, m::Msg, n, sites, mc)
+    m.deliver <= n ? deliver!(net, m, n, sites, mc) : push!(net.queue, m)
+    nothing
+end
+
+"Status to every center that is up (a send to a down center fails at once)."
 function send_status!(net::Net, k, n, kind, sites, mc)
     s = sites[k]
     for j in eachindex(sites)
-        j == k && continue
-        push!(net.queue, Msg(n + delay(mc, net.rng), k, j, kind, s.budget - s.Shat, s.need,
-                             net.sent[k, :], net.recv[k, :], 0.0))
+        (j == k || !net.up[j]) && continue
         net.messages += 1
+        post!(net, Msg(n + delay(mc, net.rng), k, j, kind, s.budget - s.Shat, s.need,
+                       net.sent[k, :], net.recv[k, :], 0.0), n, sites, mc)
     end
 end
 
 function deliver!(net::Net, m::Msg, n, sites, mc)
+    if !net.up[m.to]                      # recipient went down while the message travelled
+        if m.kind == :transfer            # the transfer fails and goes back to the sender
+            sites[m.from].budget += m.amount
+            net.sent[m.from, m.to] -= m.amount
+        end
+        return
+    end
     if m.kind == :transfer
         sites[m.to].budget += m.amount
         net.recv[m.to, m.from] += m.amount
@@ -120,7 +155,7 @@ ratio. Remaining budgets include transfers still in flight, as far as `k` can te
 function donate!(net::Net, k, n, sites, mc)
     K = length(sites)
     s = sites[k]
-    js = [j for j in 1:K if j == k || net.known[k, j]]
+    js = [j for j in 1:K if net.up[j] && (j == k || net.known[k, j])]
     length(js) > 1 || return
     sentv(i, j) = i == k ? net.sent[k, j] : net.vsent[k, i, j]
     recvv(j, i) = j == k ? net.recv[k, i] : net.vrecv[k, j, i]
@@ -143,12 +178,61 @@ function donate!(net::Net, k, n, sites, mc)
         xj < mc.min_transfer * mc.base.B && continue
         s.budget -= xj                    # off the donor's budget before it leaves
         net.sent[k, j] += xj
-        push!(net.queue, Msg(n + delay(mc, net.rng), k, j, :transfer, 0.0, 0.0, Float64[], Float64[], xj))
         net.transfers += 1
         net.moved += xj
         push!(net.log, (n, k, j, xj))
+        post!(net, Msg(n + delay(mc, net.rng), k, j, :transfer, 0.0, 0.0, Float64[], Float64[], xj), n, sites, mc)
     end
     nothing
+end
+
+"""
+The centers that are up take over the free budget of center `j`, which has been down long
+enough for all its grants to expire and their spend to reach the DB. Its DB value `Y_j` is
+then exactly what it has spent, so `j` keeps `Y_j/(1−δ)` (its invariant holds with `E_j = 0`)
+and the rest goes to the centers that are up, in proportion to their need. On recovery `j`
+starts with no headroom and gets budget back through rebalancing.
+"""
+function takeover!(net::Net, j, n, sites, mc)
+    s = sites[j]
+    keep = s.Sdb[s.asof] / (1 - s.cfg.delta)
+    free = s.budget - keep
+    ups = [k for k in eachindex(sites) if net.up[k]]
+    isempty(ups) && return false          # nobody to take it: try again later
+    free > mc.min_transfer * mc.base.B || return true
+    need = [max(sites[k].need, 0.0) for k in ups]
+    w = sum(need) > 0 ? need ./ sum(need) : fill(1 / length(ups), length(ups))
+    s.budget = keep
+    for (a, k) in enumerate(ups)
+        sites[k].budget += free * w[a]
+    end
+    net.takeovers += 1
+    net.taken += free
+    true
+end
+
+"down[k, n]: center k is down during step n."
+function outage_schedule(mc::MultiConfig, N)
+    K, dt = length(mc.names), mc.base.dt
+    down = falses(K, N)
+    mark!(k, t0, len) = for n in 1:N
+        t0 <= (n - 1) * dt < t0 + len && (down[k, n] = true)
+    end
+    for k in 1:K, (t0, len) in mc.outages[k]
+        mark!(k, t0, len)
+    end
+    if isfinite(mc.outage_mtbf)
+        orng = Xoshiro(mc.base.seed + 104729)
+        for k in 1:K
+            t = mc.outage_mtbf * randexp(orng)
+            while t < mc.base.T
+                len = mc.outage_mttr * randexp(orng)
+                mark!(k, t, len)
+                t += len + mc.outage_mtbf * randexp(orng)
+            end
+        end
+    end
+    down
 end
 
 """
@@ -173,6 +257,12 @@ function simulate_multi(mc::MultiConfig; record::Bool = true)
     periodic = mc.rebalance in (:periodic, :both)
     on_demand = mc.rebalance in (:on_demand, :both)
     collect_wait = ceil(Int, (mc.net_latency + mc.net_jitter) / dt)   # until a round's statuses arrived
+    settle = isnan(mc.takeover_after) ? b.tau_max + d_max(b) + 2dt : mc.takeover_after
+    takeover_st = ceil(Int, settle / dt)
+    down = outage_schedule(mc, N)
+    down_since = zeros(Int, K)
+    taken = falses(K)
+    possible_up = 0.0                     # demand of centers while they are up, DB units
 
     net = Net(K, rng)
     rounds = Int[]                        # steps at which a periodic round's statuses have arrived
@@ -191,8 +281,17 @@ function simulate_multi(mc::MultiConfig; record::Bool = true)
             end
         end
 
-        for s in sites
-            step!(s, n)
+        for k in 1:K
+            if down[k, n] == net.up[k]        # goes down or comes back
+                net.up[k] = !down[k, n]
+                net.up[k] || (down_since[k] = n; taken[k] = false)
+            end
+        end
+
+        for (k, s) in enumerate(sites)
+            p0 = s.m.total_possible
+            step!(s, n; up = net.up[k])
+            net.up[k] && (possible_up += s.m.total_possible - p0)
         end
 
         # ---- whole-system metrics ----
@@ -207,18 +306,28 @@ function simulate_multi(mc::MultiConfig; record::Bool = true)
             alert_minutes += dt
         end
 
+        # ---- takeover of down centers' free budget ----
+        if mc.takeover
+            for j in 1:K
+                wait = max(takeover_st, mc.takeover_frac * (b.T - n * dt) / dt)
+                if !net.up[j] && !taken[j] && n - down_since[j] >= wait
+                    taken[j] = takeover!(net, j, n, sites, mc)
+                end
+            end
+        end
+
         # ---- rebalancing ----
         n >= start || continue
-        while !isempty(rounds) && rounds[1] <= n
-            popfirst!(rounds)
-            foreach(k -> donate!(net, k, n, sites, mc), 1:K)
-        end
         if periodic && n % every == 0
-            foreach(k -> send_status!(net, k, n, :status, sites, mc), 1:K)
+            foreach(k -> net.up[k] && send_status!(net, k, n, :status, sites, mc), 1:K)
             push!(rounds, n + collect_wait)
         end
+        while !isempty(rounds) && rounds[1] <= n
+            popfirst!(rounds)
+            foreach(k -> net.up[k] && donate!(net, k, n, sites, mc), 1:K)
+        end
         for k in 1:K
-            if on_demand && sites[k].denied_now > 0 && n - last_urgent[k] >= cooldown
+            if on_demand && net.up[k] && sites[k].denied_now > 0 && n - last_urgent[k] >= cooldown
                 send_status!(net, k, n, :urgent, sites, mc)
                 last_urgent[k] = n
                 net.urgent += 1
@@ -258,6 +367,12 @@ function simulate_multi(mc::MultiConfig; record::Bool = true)
         # fraction of demand served per center; equal pacing → equal fractions
         served = [s.Sdb[N + 1] / max(s.m.total_possible, eps()) for s in sites],
         site_over = count(s.Sdb[N + 1] > s.budget * (1 + 1e-9) for s in sites),   # must be 0
+        down_hours = count(down) * dt / 60,       # summed over centers
+        possible_up = possible_up / B,            # all demand of running centers served, fraction of B
+        takeovers = net.takeovers,
+        taken = net.taken / B,
+        # budget left unspent by centers that are down at T
+        stranded = sum(max(s.budget - s.Sdb[N + 1], 0.0) for (k, s) in enumerate(sites) if !net.up[k]; init = 0.0) / B,
     )
 
     ts = (;)
@@ -290,4 +405,9 @@ aggregate_multi(results) = merge(aggregate(results), (
     net_moved = mean(r.net_moved for r in results),
     served_spread = mean(maximum(r.served) - minimum(r.served) for r in results),
     messages_per_h = mean(r.messages_per_h for r in results),
+    down_hours = mean(r.down_hours for r in results),
+    possible_up = mean(r.possible_up for r in results),
+    possible_up_min = minimum(r.possible_up for r in results),
+    taken = mean(r.taken for r in results),
+    stranded = mean(r.stranded for r in results),
 ))

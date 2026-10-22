@@ -62,3 +62,26 @@ plot!(p4, days(both), both[:S] ./ B; color = CENTERS[1][2], label = "rebalancing
 fig = plot(p1, p2, p3, p4; layout = (4, 1), size = (1000, 1250), dpi = 120)
 savefig(fig, joinpath(OUT, "multi.png"))
 println("plot → ", normpath(joinpath(OUT, "multi.png")))
+
+# ---- outage: B down for the last 2 days (scripts/multi_run.jl) ----
+frozen = read_ts(joinpath(OUT, "multi_outage_frozen.csv"))
+takeover = read_ts(joinpath(OUT, "multi_outage_takeover.csv"))
+
+q1 = plot(title = "a) Budget share B_k / B, B down for the last 2 days (shaded), takeover", ylabel = "share of B",
+          xlabel = "day", xlims = (4, 7), xticks = 4:0.5:7, ylims = (0, 0.6),
+          yticks = (0:0.1:0.6, ["0", "0.1", "0.2", "0.3", "0.4", "0.5", "0.6"]), legend = :right)
+vspan!(q1, [5, 7]; color = C_GRAY, alpha = 0.12, label = nothing)
+for (c, color) in CENTERS
+    plot!(q1, days(takeover), col(takeover, :budget, c) ./ B; color = color, label = c)
+end
+
+q2 = plot(title = "b) Total spend S / B", ylabel = "S / B", xlabel = "day", xlims = (4, 7), xticks = 4:0.5:7,
+          ylims = (0.5, 1.005), legend = :bottomright)
+vspan!(q2, [5, 7]; color = C_GRAY, alpha = 0.12, label = "B down")
+hline!(q2, [1.0]; color = C_GRAY, linestyle = :dash, linewidth = 1, label = "B (hard cap)")
+plot!(q2, days(frozen), frozen[:S] ./ B; color = C_GRAY, label = "frozen")
+plot!(q2, days(takeover), takeover[:S] ./ B; color = CENTERS[1][2], label = "takeover")
+
+fig2 = plot(q1, q2; layout = (2, 1), size = (1000, 650), dpi = 120)
+savefig(fig2, joinpath(OUT, "multi_outage.png"))
+println("plot → ", normpath(joinpath(OUT, "multi_outage.png")))

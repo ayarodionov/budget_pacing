@@ -89,8 +89,11 @@ end
 "Budget this center can give away now without breaking its hard-cap invariant."
 headroom(s::Site) = max(s.budget - (s.Y + s.E) / (1 - s.cfg.delta), 0.0)
 
-"Advance site `s` by step `n` (time `(n-1)·dt` → `n·dt`)."
-function step!(s::Site, n::Int)
+"""
+Advance site `s` by step `n` (time `(n-1)·dt` → `n·dt`). With `up = false` the center is down:
+its clients keep spending on their open grants, but the center observes, paces and grants nothing.
+"""
+function step!(s::Site, n::Int; up::Bool = true)
     cfg, rng, center, clients, m = s.cfg, s.rng, s.center, s.clients, s.m
     Ccli, Ctot, Dem, Sdb = s.Ccli, s.Ctot, s.Dem, s.Sdb
     dt, N, nc = cfg.dt, s.N, cfg.n_clients
@@ -166,6 +169,12 @@ function step!(s::Site, n::Int)
     # ================= center: observe =================
     s.asof = max(s.asof, now - s.D_st - (s.J_st > 0 ? rand(rng, 0:s.J_st) : 0))
     s.asof = max(s.asof, 1)
+    if !up
+        randperm(rng, nc)                  # keep the RNG stream as if the center were up
+        s.denied_now = 0
+        record!(s, n, dem_step, sdb_step, 0.0, 0.0, NaN)
+        return nothing
+    end
     Y = Sdb[s.asof]                    # delayed DB value (the only authoritative number)
     rep = max(1, now - Lr)             # latest index covered by client reports
     a_est = clamp(now - s.Dass_st, 1, rep)
@@ -265,30 +274,35 @@ function step!(s::Site, n::Int)
     s.need = (1 - cfg.forecast_haircut) * s.demand_rem
     s.denied_now = m.denied - denied_before
 
-    # ================= record =================
-    if !isempty(s.ts.t)
-        s.rec_demand += dem_step * cfg.beta_true
-        s.rec_spend += sdb_step
-        if n % cfg.record_every == 0
-            ts = s.ts
-            j = n ÷ cfg.record_every
-            span = cfg.record_every * dt
-            ts.t[j] = n * dt
-            ts.S[j] = Sdb[now]
-            ts.Y[j] = Y
-            ts.Shat[j] = Shat
-            ts.E[j] = E
-            ts.demand[j] = s.rec_demand / span
-            ts.spend[j] = s.rec_spend / span
-            ts.rstar[j] = min(p, 1 + cfg.demand_headroom) * lam_tot * center.beta_hat   # DB units
-            ts.p[j] = min(p, 1 + cfg.demand_headroom)   # effective throttle
-            ts.beta_hat[j] = center.beta_hat
-            ts.active[j] = count(c -> c.grant != 0, clients)
-            ts.feasibility[j] = feasibility
-            ts.budget[j] = s.budget
-            s.rec_demand = s.rec_spend = 0.0
-        end
-    end
+    p_eff = min(p, 1 + cfg.demand_headroom)   # effective throttle
+    record!(s, n, dem_step, sdb_step, p_eff, p_eff * lam_tot * center.beta_hat, feasibility)
+    nothing
+end
+
+"Accumulate the step's demand and spend; every `record_every` steps write one time-series sample."
+function record!(s::Site, n, dem_step, sdb_step, p_eff, rstar_db, feasibility)
+    isempty(s.ts.t) && return
+    cfg = s.cfg
+    s.rec_demand += dem_step * cfg.beta_true
+    s.rec_spend += sdb_step
+    n % cfg.record_every == 0 || return
+    ts = s.ts
+    j = n ÷ cfg.record_every
+    span = cfg.record_every * cfg.dt
+    ts.t[j] = n * cfg.dt
+    ts.S[j] = s.Sdb[n + 1]
+    ts.Y[j] = s.Y
+    ts.Shat[j] = s.Shat
+    ts.E[j] = s.E
+    ts.demand[j] = s.rec_demand / span
+    ts.spend[j] = s.rec_spend / span
+    ts.rstar[j] = rstar_db                 # DB units
+    ts.p[j] = p_eff
+    ts.beta_hat[j] = s.center.beta_hat
+    ts.active[j] = count(c -> c.grant != 0, s.clients)
+    ts.feasibility[j] = feasibility
+    ts.budget[j] = s.budget
+    s.rec_demand = s.rec_spend = 0.0
     nothing
 end
 

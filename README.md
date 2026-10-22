@@ -8,7 +8,8 @@ is *not* the sum of client-counted spend (ratio β, e.g. fees).
 
 Full model description, strategy comparison and results: **[MODEL.md](MODEL.md)**.
 How clients and the center work under each pacing strategy: **[PACING.md](PACING.md)**.
-Several centers (A–D, different loads and time zones) sharing one budget, with rebalancing:
+Several centers (A–D, different loads and time zones) sharing one budget, with rebalancing and
+center outages:
 **[MULTI.md](MULTI.md)**.
 
 ## Run
@@ -20,7 +21,7 @@ julia --project=plots plots/plot.jl           # out/run.csv → out/run.png  (fi
 julia scripts/compare_pacing.jl               # strategies side by side → out/pacing_*.csv
 julia --project=plots plots/plot_pacing.jl    # → out/pacing.png
 julia scripts/multi_run.jl                    # 4 centers: static split vs rebalancing → out/multi_run_*.csv
-julia --project=plots plots/plot_multi.jl     # → out/multi.png
+julia --project=plots plots/plot_multi.jl     # → out/multi.png, out/multi_outage.png
 julia -t auto scripts/multi_strategies.jl 40 > out/multi.md   # rebalancing Monte Carlo
 ```
 

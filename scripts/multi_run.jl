@@ -24,3 +24,14 @@ for mode in (:none, :both)
     path = write_csv(joinpath(@__DIR__, "..", "out", "multi_run_$mode.csv"), ts)
     println("  time series → ", normpath(path))
 end
+
+# Outage: B is down for the last 2 days; its budget frozen vs taken over by A, C and D.
+outage = MultiConfig(outages = [Tuple{Float64,Float64}[], [(5 * 1440.0, 2 * 1440.0)],
+                                Tuple{Float64,Float64}[], Tuple{Float64,Float64}[]])
+for (name, mc) in ("frozen" => with(outage; takeover = false), "takeover" => outage)
+    summary, ts, _ = simulate_multi(mc)
+    @printf("\n=== B down for the last 2 days, %s: spend %.4f%% of B, taken over %.2f%% of B, over %g\n",
+            name, 100summary.spend_ratio, 100summary.taken, summary.overspend)
+    path = write_csv(joinpath(@__DIR__, "..", "out", "multi_outage_$name.csv"), ts)
+    println("  time series → ", normpath(path))
+end

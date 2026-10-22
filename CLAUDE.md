@@ -26,9 +26,9 @@ julia -t auto scripts/strategies.jl 40 > out/strategies.md   # MODEL.md §6 tabl
 julia -t auto scripts/beta_sensitivity.jl 40 > out/beta_sensitivity.md   # MODEL.md §6.H
 julia scripts/compare_pacing.jl                              # strategies on one world → out/pacing_*.csv
 julia --project=plots plots/plot_pacing.jl                   # → out/pacing.png
-julia scripts/multi_run.jl                                   # 4 centers → out/multi_run_{none,both}.csv
-julia --project=plots plots/plot_multi.jl                    # → out/multi.png
-julia -t auto scripts/multi_strategies.jl 40 > out/multi.md  # MULTI.md tables A–D (~1 min)
+julia scripts/multi_run.jl                                   # 4 centers → out/multi_run_*.csv, out/multi_outage_*.csv
+julia --project=plots plots/plot_multi.jl                    # → out/multi.png, out/multi_outage.png
+julia -t auto scripts/multi_strategies.jl 40 > out/multi.md  # MULTI.md tables A–F (~1.5 min)
 ```
 
 The trailing number is the count of seeds per scenario. Use `-t auto`, because `run_mc` uses
@@ -62,7 +62,10 @@ behaviour, rerun the matching script and update the numbers in the docs.
   the demand pattern) and step them together. Between steps they deliver messages (`Net`, `Msg`)
   and run rebalancing: periodic status rounds and urgent requests, with `donate!` (only donors
   push surplus, never more than `headroom(site)`). The budget must be conserved
-  (Σ budgets + transfers in flight = B); this is checked at the end of every run.
+  (Σ budgets + transfers in flight = B); this is checked at the end of every run. Messages have
+  zero latency by default (`post!` delivers at once). Outages (`outage_schedule`) run a site with
+  `step!(site, n; up = false)`: its clients keep spending open grants, the center does nothing.
+  `takeover!` gives a down center's unspent budget to the running centers.
 - `src/analysis.jl`: `run_mc` (threaded over seeds; `multi.jl` adds a `MultiConfig` method),
   `with(cfg; field=value)` (copy with overrides for `Config` or `MultiConfig`, errors on an unknown field), `aggregate`, the table printers, and a dependency-free
   `write_csv`.
@@ -79,6 +82,7 @@ Conventions to keep in mind:
   `beta_true` or `base_pattern`.
 - Multi-center: a transfer is debited from the donor *before* it is sent, and credited on
   arrival. Never let a center give more than `headroom`, or the global cap argument breaks.
+  Never take over a down center's budget before `τ_max + D_max`: its grants may still be spent.
 - The hard cap must not depend on estimates. Only the nowcast and pacing use β̂ and the profile.
   The invariant uses only `Y`, `beta_max` and `D_max`.
 - To add a parameter: add a commented field to `Config` and use it in the loop. Scenarios are
