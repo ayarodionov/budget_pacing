@@ -26,7 +26,11 @@ Base.@kwdef struct MultiConfig
 
     # ---------------- rebalancing ----------------
     rebalance::Symbol = :both              # :none | :periodic | :on_demand | :both
-    rebalance_every::Float64 = 60.0        # periodic round: every center broadcasts its status [min]
+    rebalance_every::Float64 = 60.0        # each center's rebalancing timer [min]
+    round_mode::Symbol = :pull             # :pull  own timer, pull fresh statuses, then donate (no clock sync)
+                                           # :push  own timer, broadcast own status, donate from last-heard statuses
+                                           # :sync  all centers report and decide at the same instant (ideal; needs synced clocks)
+    timer_jitter::Float64 = 0.1            # each timer period is rebalance_every × (1 ± jitter); random phase
     rebalance_start::Float64 = 1440.0      # no rebalancing before (centers learn their profiles) [min]
     rebalance_tol::Float64 = 0.02          # donor gives only when surplus > tol × its target
     min_transfer::Float64 = 1e-4           # smaller transfers are not sent, fraction of B
@@ -54,6 +58,9 @@ function validate(mc::MultiConfig)
         @warn "takeover_after < τ_max + D_max: a down center's grants may not have settled, hard cap is not guaranteed"
     mc.rebalance in (:none, :periodic, :on_demand, :both) ||
         error("rebalance must be :none, :periodic, :on_demand or :both")
+    mc.round_mode in (:pull, :push, :sync) || error("round_mode must be :pull, :push or :sync")
+    mc.round_mode != :pull || (mc.net_latency == 0 && mc.net_jitter == 0) ||
+        error("round_mode = :pull reads peers' current status instantly: needs zero latency (use :push)")
     nothing
 end
 
@@ -127,6 +134,18 @@ function send_status!(net::Net, k, n, kind, sites, mc)
     end
 end
 
+"Center `k` asks every running peer for its current status (instant with zero latency)."
+function pull_status!(net::Net, k, sites)
+    for j in eachindex(sites)
+        (j == k || !net.up[j]) && continue
+        s = sites[j]
+        net.R[k, j], net.need[k, j], net.known[k, j] = s.budget - s.Shat, s.need, true
+        net.vsent[k, j, :] .= view(net.sent, j, :)
+        net.vrecv[k, j, :] .= view(net.recv, j, :)
+        net.messages += 2                 # request + reply
+    end
+end
+
 function deliver!(net::Net, m::Msg, n, sites, mc)
     if !net.up[m.to]                      # recipient went down while the message travelled
         if m.kind == :transfer            # the transfer fails and goes back to the sender
@@ -143,7 +162,10 @@ function deliver!(net::Net, m::Msg, n, sites, mc)
         net.R[k, j], net.need[k, j], net.known[k, j] = m.R, m.need, true
         net.vsent[k, j, :] .= m.sent
         net.vrecv[k, j, :] .= m.recv
-        m.kind == :urgent && donate!(net, k, n, sites, mc)
+        if m.kind == :urgent
+            mc.round_mode == :pull && pull_status!(net, k, sites)
+            donate!(net, k, n, sites, mc)
+        end
     end
 end
 
@@ -265,7 +287,10 @@ function simulate_multi(mc::MultiConfig; record::Bool = true)
     possible_up = 0.0                     # demand of centers while they are up, DB units
 
     net = Net(K, rng)
-    rounds = Int[]                        # steps at which a periodic round's statuses have arrived
+    rounds = Int[]                        # :sync: steps at which a round's statuses have arrived
+    trng = Xoshiro(b.seed + 7919)         # timers: random phase and jitter (centers' clocks are not synced)
+    tick() = max(1, round(Int, every * (1 + mc.timer_jitter * (2rand(trng) - 1))))
+    next_tick = [start + rand(trng, 0:every - 1) for _ in 1:K]
     last_urgent = fill(-cooldown, K)
     max_commit = err_hat = err_naive = 0.0
     alert_first, alert_minutes, finish_time = NaN, 0.0, NaN
@@ -318,13 +343,27 @@ function simulate_multi(mc::MultiConfig; record::Bool = true)
 
         # ---- rebalancing ----
         n >= start || continue
-        if periodic && n % every == 0
-            foreach(k -> net.up[k] && send_status!(net, k, n, :status, sites, mc), 1:K)
-            push!(rounds, n + collect_wait)
-        end
-        while !isempty(rounds) && rounds[1] <= n
-            popfirst!(rounds)
-            foreach(k -> net.up[k] && donate!(net, k, n, sites, mc), 1:K)
+        if periodic && mc.round_mode == :sync
+            if n % every == 0
+                foreach(k -> net.up[k] && send_status!(net, k, n, :status, sites, mc), 1:K)
+                push!(rounds, n + collect_wait)
+            end
+            while !isempty(rounds) && rounds[1] <= n
+                popfirst!(rounds)
+                foreach(k -> net.up[k] && donate!(net, k, n, sites, mc), 1:K)
+            end
+        elseif periodic
+            for k in 1:K                      # each center on its own timer
+                n >= next_tick[k] || continue
+                next_tick[k] = n + tick()
+                net.up[k] || continue
+                if mc.round_mode == :pull
+                    pull_status!(net, k, sites)
+                else
+                    send_status!(net, k, n, :status, sites, mc)
+                end
+                donate!(net, k, n, sites, mc)
+            end
         end
         for k in 1:K
             if on_demand && net.up[k] && sites[k].denied_now > 0 && n - last_urgent[k] >= cooldown

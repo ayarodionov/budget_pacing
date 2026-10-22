@@ -60,8 +60,9 @@ behaviour, rerun the matching script and update the numbers in the docs.
 - `src/multi.jl`: `MultiConfig` and `simulate_multi`. These build one `Site` per center
   (`site_configs`: budget share by assumed load, demand and client count by true load, `tz` shifts
   the demand pattern) and step them together. Between steps they deliver messages (`Net`, `Msg`)
-  and run rebalancing: periodic status rounds and urgent requests, with `donate!` (only donors
-  push surplus, never more than `headroom(site)`). The budget must be conserved
+  and run rebalancing: each center on its own unsynchronized timer (`round_mode = :pull` pulls
+  fresh statuses with `pull_status!`; `:push`/`:sync` for comparison) plus urgent requests, with
+  `donate!` (only donors push surplus, never more than `headroom(site)`). The budget must be conserved
   (Σ budgets + transfers in flight = B); this is checked at the end of every run. Messages have
   zero latency by default (`post!` delivers at once). Outages (`outage_schedule`) run a site with
   `step!(site, n; up = false)`: its clients keep spending open grants, the center does nothing.

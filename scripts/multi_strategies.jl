@@ -67,7 +67,7 @@ end
 
 detail("C. Rebalancing parameters (world: loads 30/30/20/20, mode `both`)",
        with(base; load_true = [0.3, 0.3, 0.2, 0.2]), [
-    "default (every 60 min, tol 0.02, zero latency)" => (;),
+    "default (pull, every 60 min, tol 0.02)" => (;),
     "every 15 min"                 => (rebalance_every = 15.0,),
     "every 240 min"                => (rebalance_every = 240.0,),
     "periodic only, every 240 min" => (rebalance = :periodic, rebalance_every = 240.0),
@@ -75,9 +75,9 @@ detail("C. Rebalancing parameters (world: loads 30/30/20/20, mode `both`)",
     "tol 0.05"                     => (rebalance_tol = 0.05,),
     "tol 0.1"                      => (rebalance_tol = 0.1,),
     "start at t = 0"               => (rebalance_start = 0.0,),
-    "latency 30 ± 30 min"          => (net_latency = 30.0, net_jitter = 30.0),
-    "latency 120 min"              => (net_latency = 120.0,),
-    "near-ideal: every 5 min, latency 1 min" => (rebalance_every = 5.0, net_latency = 1.0),
+    "push, latency 30 ± 30 min"    => (round_mode = :push, net_latency = 30.0, net_jitter = 30.0),
+    "push, latency 120 min"        => (round_mode = :push, net_latency = 120.0),
+    "every 5 min"                  => (rebalance_every = 5.0,),
     "on demand only"               => (rebalance = :on_demand,),
 ])
 
@@ -88,7 +88,7 @@ detail("D. Late local drop (world: A at 30% in the last 12 h)",
     "on demand"           => (rebalance = :on_demand,),
     "both"                => (;),
     "both, haircut 0.05"  => (base = with(base.base; forecast_haircut = 0.05),),
-    "both, latency 30 min"=> (net_latency = 30.0,),
+    "both, push, latency 30 min" => (round_mode = :push, net_latency = 30.0),
 ])
 
 # ---------------- E. center outages ----------------
@@ -138,3 +138,19 @@ detail("F. Safety of takeover (world: random outages MTBF 1 d, MTTR 12 h)",
     "takeover once grants settled (τ_max + D_max)" => (takeover_frac = 0.0,),
     "takeover after 10 min (too early!)"           => (takeover_frac = 0.0, takeover_after = 10.0),
 ])
+
+# ---------------- G. round mode (no synchronized clocks) ----------------
+rmodes = [
+    "sync: all at the same instant (ideal)" => (round_mode = :sync,),
+    "pull: own timer, pull fresh statuses (default)" => (;),
+    "push: own timer, last-heard statuses" => (round_mode = :push,),
+]
+gworlds = worlds[1:3]
+println("\n### G. Round mode (mode `both`, zero latency)\n\n_cell: mean % B spent / served spread pp / moved % B / messages per h; $RUNS runs per cell_\n")
+println("| round mode | ", join(first.(gworlds), " | "), " |")
+println("|---|", repeat("---|", length(gworlds)))
+for (rname, kw) in rmodes
+    cells = [(a = agg(with(w; kw...)); @sprintf("%.2f / %.1f / %.1f / %.0f", 100a.spend_mean, 100a.served_spread,
+                                                 100a.moved, a.messages_per_h)) for (_, w) in gworlds]
+    println("| $rname | ", join(cells, " | "), " |")
+end
