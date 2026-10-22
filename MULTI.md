@@ -67,7 +67,17 @@ throttle**. This is what a single center serving all clients would do.
 
 - **Periodic round** (every 60 min, from day 2). Every center broadcasts a status $(R_k, N_k, \text{sent}_k, \text{recv}_k)$. Once the round's statuses have arrived (latency + jitter), every center computes the targets from the same snapshot. **Only donors act**: a center with $R_k - R_k^* > \text{tol}\cdot R_k^*$ (tol = 2 %) pushes its surplus to the centers in deficit, in proportion to their deficits. All donors use the same snapshot, so together they fill each deficit once.
 - **On demand.** A center whose grant requests were denied (it has hit its own cap) sends an *urgent* status, at most once every 15 min. Each recipient decides at once whether to donate.
-- **Transfers in flight.** Every status carries cumulative `sent` and `recv` counters. For each recipient $j$, a donor adds $\sum_i \max(\text{sent}_{i\to j} - \text{recv}_{j\leftarrow i}, 0)$ to the reported $R_j$. So a deficit that has already been paid is not paid again while the transfer is on its way. Without this, a latency comparable to the round period made budget go back and forth: 110 % of $B$ moved at latency 30 ± 30 min.
+- **Transfers in flight.** A status reports $R_j$ as it was when it was sent. It does not include transfers that are still on their way to $j$. Without a correction, the next round would see the same deficit and pay it again. To prevent that, every status also carries two cumulative counters:
+  - `sent[i, j]`: everything center $i$ has sent to $j$ so far;
+  - `recv[j, i]`: everything center $j$ has received from $i$ so far.
+
+  The difference is what is still in flight from $i$ to $j$. A donor adds it, summed over all senders $i$, to the reported $R_j$ before it computes $j$'s deficit:
+
+  ```math
+  R_j^{\text{used}} = R_j^{\text{reported}} + \sum_{i \ne j} \max\big(\text{sent}[i, j] - \text{recv}[j, i],\; 0\big)
+  ```
+
+  For its own transfers, the donor uses its current `sent` counter. For the others, it uses the counters from their last status. Without this correction, budget went back and forth whenever latency was comparable to the round period: 110 % of $B$ moved at latency 30 ± 30 min, against 45 % with it.
 - **No rebalancing on day 1.** Until then the centers have no demand profile, and their need forecasts are unreliable.
 
 ## 3. Simulation setup
