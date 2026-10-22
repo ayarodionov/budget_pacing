@@ -67,24 +67,36 @@ throttle**. This is what a single center serving all clients would do.
 
 - **Periodic round** (every 60 min, from day 2). Every center broadcasts a status $(R_k, N_k, \text{sent}_k, \text{recv}_k)$. Once the round's statuses have arrived (latency + jitter), every center computes the targets from the same snapshot. **Only donors act**: a center with $R_k - R_k^* > \text{tol}\cdot R_k^*$ (tol = 2 %) pushes its surplus to the centers in deficit, in proportion to their deficits. All donors use the same snapshot, so together they fill each deficit once.
 - **On demand.** A center whose grant requests were denied (it has hit its own cap) sends an *urgent* status, at most once every 15 min. Each recipient decides at once whether to donate.
-- **Transfers in flight.** A status reports $R_j$ as it was when it was sent. It does not include transfers that are still on their way to $j$. Without a correction, the next round would see the same deficit and pay it again. To prevent that, every status also carries two cumulative counters:
-  - **sent** from $i$ to $j$: everything center $i$ has sent to $j$ so far (reported by $i$);
-  - **received** from $i$ by $j$: everything center $j$ has received from $i$ so far (reported by $j$).
-
-  Their difference is what is still on its way from $i$ to $j$. Before a donor computes $j$'s deficit, it adds what is in flight to $j$ from every sender:
-
-  ```math
-  \text{in flight}_{i \to j} = \text{sent}_{i \to j} - \text{received}_{i \to j}
-  ```
-
-  ```math
-  R_j^{\text{corrected}} = R_j + \sum_{i \ne j} \text{in flight}_{i \to j}
-  ```
-
-  A negative difference can only come from comparing an older status of $i$ with a newer one of $j$. It counts as zero. (In the code: `sent[i, j]`, `recv[j, i]`, `incoming(j)` in `donate!`.)
-
-  For its own transfers, the donor uses its current `sent` counter. For the others, it uses the counters from their last status. Without this correction, budget went back and forth whenever latency was comparable to the round period: 110 % of $B$ moved at latency 30 ± 30 min, against 45 % with it.
+- **Transfers in flight** are counted in each recipient's remaining budget (§2.4), so a deficit is not paid twice.
 - **No rebalancing on day 1.** Until then the centers have no demand profile, and their need forecasts are unreliable.
+
+### 2.4 Transfers in flight
+
+A status reports $R_j$ as it was when it was sent. It does not include transfers that are still on
+their way to $j$. Without a correction, the next round would see the same deficit and pay it
+again. To prevent that, every status also carries two cumulative counters:
+
+- **sent** from $i$ to $j$: everything center $i$ has sent to $j$ so far (reported by $i$);
+- **received** from $i$ by $j$: everything center $j$ has received from $i$ so far (reported by $j$).
+
+Their difference is what is still on its way from $i$ to $j$. Before a donor computes $j$'s
+deficit, it adds what is in flight to $j$ from every sender:
+
+```math
+\text{in flight}_{i \to j} = \text{sent}_{i \to j} - \text{received}_{i \to j}
+```
+
+```math
+R_j^{\text{corrected}} = R_j + \sum_{i \ne j} \text{in flight}_{i \to j}
+```
+
+A negative difference can only come from comparing an older status of $i$ with a newer one of
+$j$. It counts as zero. For its own transfers, the donor uses its current **sent** counter; for
+the others, the counters from their last status. (In the code: `sent[i, j]`, `recv[j, i]`, and
+`incoming(j)` in `donate!`.)
+
+Without this correction, budget went back and forth whenever the latency was comparable to the
+round period: 110 % of $B$ moved at latency 30 ± 30 min, against 45 % with it.
 
 ## 3. Simulation setup
 
