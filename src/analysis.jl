@@ -11,14 +11,14 @@ function run_mc(cfg::Config; seeds = 1:50)
     results
 end
 
-"Copy of `cfg` with some fields replaced."
-function with(cfg::Config; kwargs...)
-    vals = Dict{Symbol,Any}(f => getfield(cfg, f) for f in fieldnames(Config))
+"Copy of `cfg` (a `Config` or `MultiConfig`) with some fields replaced."
+function with(cfg::T; kwargs...) where {T<:Union{Config,MultiConfig}}
+    vals = Dict{Symbol,Any}(f => getfield(cfg, f) for f in fieldnames(T))
     for (k, v) in kwargs
-        haskey(vals, k) || error("unknown Config field $k")
+        haskey(vals, k) || error("unknown $T field $k")
         vals[k] = v
     end
-    Config(; vals...)
+    T(; vals...)
 end
 
 quantile_sorted(x, q) = x[clamp(round(Int, q * (length(x) - 1)) + 1, 1, length(x))]

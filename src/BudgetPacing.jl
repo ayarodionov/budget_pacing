@@ -7,11 +7,13 @@ module BudgetPacing
 
 using Random, Statistics, Printf
 
-export Config, simulate, run_mc, with, aggregate, print_header, print_row, print_summary, write_csv
+export Config, simulate, run_mc, with, aggregate, print_header, print_row, print_summary, write_csv,
+       MultiConfig, simulate_multi, aggregate_multi
 
 include("config.jl")
 include("model.jl")
 include("simulate.jl")
+include("multi.jl")
 include("analysis.jl")
 
 end
