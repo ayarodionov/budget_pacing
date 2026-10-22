@@ -87,12 +87,93 @@ Y_k + E_k \le B_k\,(1-\delta)
 ```
 
 and the budget is conserved: $\sum_k B_k + (\text{transfers in flight}) = B$. Together these
-give $\sum_k S_k \le \sum_k B_k \le B$ at the end. Two rules keep both properties during transfers:
+give $\sum_k S_k \le \sum_k B_k \le B$ at the end. Two rules keep both properties during transfers.
 
-1. **Debit first.** The donor lowers its own $B_k$ *before* it sends the transfer, and the recipient raises its $B_j$ only when the transfer arrives. Budget in flight belongs to no one, so it can never be counted twice.
-2. **Give only headroom.** A donor gives at most $B_k - (Y_k + E_k)/(1-\delta)$, so its own invariant still holds after the debit. Budget reserved by its open grants never leaves.
+#### Rule 1: debit first
 
-No estimate is involved, as in the single-center cap. In every run below, no center exceeded its
+A transfer of $x$ from donor $k$ to recipient $j$ takes three steps:
+
+1. $k$ lowers its own budget, $B_k \leftarrow B_k - x$;
+2. $k$ sends the transfer message, which travels for the network latency $L$;
+3. when it arrives, $j$ raises its budget, $B_j \leftarrow B_j + x$.
+
+While the message travels, $x$ belongs to **no** center: neither $k$ nor $j$ can issue grants
+against it. Let $F$ be the total of transfers in flight. Each step changes the sum in a balanced
+way: step 1 moves $x$ from $B_k$ to $F$, and step 3 moves it from $F$ to $B_j$. So at every moment
+
+```math
+\sum_k B_k + F = B
+```
+
+and in particular $\sum_k B_k \le B$.
+
+The order matters. Suppose the recipient were credited first: $k$ announces "$x$ is yours", $j$
+raises $B_j$ at once, and $k$ debits later. Then for a moment both centers could issue grants
+against the same $x$, and their clients could spend it twice. With debit first, the worst
+outcome is the opposite one: for a latency, nobody can spend $x$.
+
+*Example.* A gives 10 to B, with latency 2 min. At $t$, A's budget goes from 500 to 490 and
+$F = 10$. At $t + 1$ min nothing changes. At $t + 2$ min the message arrives: B's budget goes from
+250 to 260 and $F = 0$. The sum $B_A + B_B + F$ is 750 throughout.
+
+*Failures.* If a transfer were lost, $x$ would leave the system: $\sum_k B_k$ would fall below
+$B$. That causes underspend, never overspend. Transfers still in flight at $T$ are simply not
+spent. Message loss is not modelled (§6); a real protocol needs acknowledgements and retries,
+with an id per transfer so that a retry is never credited twice.
+
+In the code, `donate!` lowers `s.budget` before it queues the transfer, and `deliver!` raises the
+recipient's budget on arrival. At the end of every run `simulate_multi` checks that
+$\sum_k B_k + F = B$.
+
+#### Rule 2: give only headroom
+
+Debit first protects the sum, but a donor must not lower its own $B_k$ below what it has already
+committed. Its commitments are exactly what its invariant counts:
+
+- $Y_k$: spend already visible in the DB;
+- $E_k$: everything its open grants may still add to the DB beyond $Y_k$. This covers spend that has happened but is not in the DB yet, plus the unused amounts of open grants, all multiplied by $\beta_{max}$ (MODEL.md §4.1).
+
+Clients may spend their grants at any moment until expiry, and the center cannot take a grant
+back. So the donor may give away only what is left above its commitments, its **headroom**:
+
+```math
+x \le H_k = B_k - \frac{Y_k + E_k}{1-\delta}
+```
+
+Its invariant then still holds after the debit:
+
+```math
+Y_k + E_k \le (B_k - H_k)(1-\delta) \le (B_k - x)(1-\delta)
+```
+
+From then on the single-center argument applies to the new $B_k$. $Y_k + E_k$ does not grow
+between grant issues, and each new grant is checked against the lowered budget.
+
+Headroom is not the same as the remaining budget $R_k = B_k - \hat S_k$ that rebalancing
+allocates (§2.2). $R_k$ is an estimate of what is not spent yet. $H_k$ is a bound that also
+excludes everything open grants may still spend, so usually $H_k < R_k$. The transfer is the
+smallest of three amounts:
+
+```math
+x = \min(\text{surplus}_k,\ \text{total deficit of the others},\ H_k)
+```
+
+*Example* ($\delta = 0$). Center $k$ has $B_k = 100$ and sees $Y_k = 60$ in the DB. Its nowcast
+is $\hat S_k = 70$: about 10 has been spent but is not in the DB yet. Its open grants still allow
+15 more, so $E_k = 10 + 15 = 25$. Then $R_k = 30$, but $H_k = 100 - 85 = 15$. If $k$ gave away
+30, its budget would drop to 70 while its clients may still bring its spend to 85, which is over
+the new budget. So $k$ gives at most 15 now. The other 15 is reserved by its open grants. It
+becomes headroom again as those grants expire or their unused parts are returned, and a later
+round can move it.
+
+This also means a donor cannot hand over its whole surplus in one step when it has many open
+grants. Grants expire within at most 60 min and unused amounts are returned early (MODEL.md §4.4),
+so the rest follows in later rounds.
+
+In the code, `headroom(site)` computes $H_k$ from `Y` and `E` as they stand after the step's
+grants were issued, and `donate!` caps every transfer with it.
+
+No estimate is involved in either rule, as in the single-center cap. In every run below, no center exceeded its
 own budget and the total never exceeded $B$. The simulator also checks at the end that budget was conserved.
 
 ### 2.2 Allocation target
