@@ -207,6 +207,55 @@ throttle**. This is what a single center serving all clients would do.
 - **Down centers are left out.** With zero latency a send to a down center fails at once, so every center knows which peers are running. Down centers receive no statuses or transfers, and the targets are computed over running centers only. What happens to a down center's own budget is the subject of §2.5.
 - **No rebalancing on day 1.** Until then the centers have no demand profile, and their need forecasts are unreliable.
 
+#### All centers at once, carried out as one-way transfers
+
+A periodic round is not a negotiation between pairs of centers. Every running center makes its
+decision at the same moment, from the same snapshot of all centers, and the decisions are then
+carried out as separate one-way transfers, each from one donor to one recipient:
+
+1. **Everyone reports.** Every running center sends its status to every other running center. With zero latency, all of them now hold the same snapshot of $R_k$ and $N_k$.
+2. **Everyone computes the same targets** $R_k^*$ (§2.2). So every center knows, without asking, which centers are donors (above target) and which are recipients (below target).
+3. **Only donors act.** Each donor splits its surplus over *all* centers in deficit, in proportion to their deficits. Recipients do nothing.
+
+The targets add up to the same total as the remaining budgets, so the total surplus equals the
+total deficit. Each donor sends its share of every deficit, and together the donors fill each
+deficit exactly once, with no donor knowing what the others send.
+
+*Example.* Need is split 30/30/15/15 and the remaining budgets are A 30, B 25, C 0, D 5. The total
+is 60, so the targets are 20, 20, 10, 10:
+
+| | A | B | C | D |
+|---|---|---|---|---|
+| remaining $R_k$ | 30 | 25 | 0 | 5 |
+| target $R_k^*$ | 20 | 20 | 10 | 10 |
+| surplus (+) / deficit (−) | +10 | +5 | −10 | −5 |
+| transfers | 6.67 → C, 3.33 → D | 3.33 → C, 1.67 → D | receives 10 | receives 5 |
+
+A sends $10 \cdot 10/15$ to C and $10 \cdot 5/15$ to D; B sends $5 \cdot 10/15$ to C and
+$5 \cdot 5/15$ to D. After one round, all four centers are on target, through four transfers.
+
+In the code the donors run one after another in index order, but in the same instant, and each
+one uses the snapshot taken at the start of the round, not what earlier donors have just sent. A
+donor is above its target, so it never receives in the same round, and the order does not
+matter. A round can stay incomplete for two reasons:
+- a donor gives at most its headroom (Rule 2, §2.1);
+- surpluses below the tolerance and transfers below the minimum size are skipped.
+
+The next round moves what is left.
+
+**On-demand requests are not coordinated like this.** The requester sends its fresh status to all
+running centers, and each of them runs the same donor logic at once. It uses the requester's fresh
+status, but the other centers' statuses from the last periodic round, which may be up to 60 min
+old. So a donor may also give to another center in deficit, not only to the requester. The donors'
+views may differ slightly, and the next periodic round evens out the difference.
+
+**Takeover** (§2.5) is also all-at-once: a down center's unspent budget is split over all running
+centers in one step, in proportion to their need.
+
+With several donors and several recipients, a round can produce up to donors × recipients
+transfers, four in the example. Netting would combine them into the fewest transfers that give the
+same final budgets (§6).
+
 ### 2.4 Transfers in flight (latency > 0 only)
 
 With zero latency nothing is ever in flight, and this section does not apply. It matters when
