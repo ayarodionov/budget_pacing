@@ -24,9 +24,59 @@ D's weekend starts 13 h before A's, and D has 13 h of its Monday left after its 
 
 ## 2. Design
 
+```mermaid
+flowchart LR
+  subgraph P["Centers: full mesh, latency L<br/>status (R, N, sent, recv), urgent requests, transfers"]
+    direction TB
+    CA["A · load ½<br/>local time = A<br/>budget B_A"]
+    CB["B · load ¼<br/>A − 2 h<br/>budget B_B"]
+    CC["C · load ⅛<br/>A + 6 h<br/>budget B_C"]
+    CD["D · load ⅛<br/>A + 13 h<br/>budget B_D"]
+    CA <==> CB
+    CB <==> CC
+    CC <==> CD
+    CA <==> CC
+    CB <==> CD
+    CA <==> CD
+  end
+  subgraph K["Clients (grants ↔ reports)"]
+    direction TB
+    KA["Clients A"]
+    KB["Clients B"]
+    KC["Clients C"]
+    KD["Clients D"]
+  end
+  DB[("Central DB<br/>spend S_k per center")]
+
+  CA <--> KA
+  CB <--> KB
+  CC <--> KC
+  CD <--> KD
+  K -- spend --> DB
+  DB -. "Y_k = S_k(t − D)<br/>to each center" .-> P
+```
+
 Each center runs the single-center design unchanged on its own clients and its current $B_k$:
 grants, nowcast $\hat S_k$, adaptive pacing, and the hard-cap invariant. Rebalancing is a layer
-on top of it, and only changes $B_k$.
+on top of it, and only changes $B_k$:
+
+```mermaid
+flowchart LR
+  subgraph K["Center k"]
+    SCD["Single-center design (MODEL.md §4)<br/>estimation, pacing, grants<br/>cap: Y_k + E_k ≤ B_k(1 − δ)"]
+    RB["Rebalancer<br/>target R*_k = ΣR · N_k / ΣN<br/>gives only headroom, debit first"]
+    SCD -- "R_k = B_k − Ŝ_k, N_k,<br/>headroom, denied grants" --> RB
+    RB -- "B_k − sent + received" --> SCD
+  end
+  DB[("Central DB")] -- "Y_k = S_k(t − D)" --> SCD
+  CL["Clients of k"] <-- "grants / reports" --> SCD
+  RB <== "status, urgent, transfers<br/>(latency L)" ==> P["Other centers"]
+```
+
+The two layers inside a center talk only through $B_k$. The single-center design reports its
+remaining budget $R_k$, its need $N_k$ (§2.2) and its headroom, and it signals when it has
+denied grants. The rebalancer changes $B_k$ by the transfers it sends and receives. The hard cap
+is still enforced by the single-center layer alone.
 
 ### 2.1 Hard cap: local invariants plus conserved budget
 
