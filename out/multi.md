@@ -94,3 +94,26 @@ _cell: mean % B spent / served spread pp / moved % B / messages per h; 40 runs p
 | sync: all at the same instant (ideal) | 100.00 / 4.2 / 22.1 / 13 | 100.00 / 9.7 / 42.2 / 13 | 100.00 / 6.1 / 29.4 / 13 |
 | pull: own timer, pull fresh statuses (default) | 100.00 / 4.2 / 21.1 / 37 | 100.00 / 9.9 / 41.5 / 39 | 100.00 / 6.2 / 28.4 / 38 |
 | push: own timer, last-heard statuses | 100.00 / 4.3 / 21.2 / 13 | 100.00 / 10.1 / 43.5 / 13 | 100.00 / 6.3 / 29.6 / 13 |
+
+### H. Objective: fair share vs spend only (mode `both`)
+
+_40 runs per row_
+
+| world | objective | spend mean % | min % | runs over B | served spread (pp) | transfers | moved % | net % |
+|---|---|---|---|---|---|---|---|---|
+| loads as assumed | fair | 100.000 | 100.000 | 0 | 4.2 | 165 | 21.1 | 1.0 |
+| loads as assumed | spend | 100.000 | 100.000 | 0 | 2.4 | 0 | 0.0 | 0.0 |
+| loads 30/30/20/20 | fair | 100.000 | 100.000 | 0 | 9.9 | 171 | 41.5 | 17.8 |
+| loads 30/30/20/20 | spend | 100.000 | 100.000 | 0 | 36.8 | 16 | 9.9 | 9.9 |
+| random loads σ=0.3 | fair | 100.000 | 100.000 | 0 | 6.2 | 164 | 28.4 | 8.0 |
+| random loads σ=0.3 | spend | 100.000 | 100.000 | 0 | 29.4 | 15 | 2.4 | 2.4 |
+| D: day-4 shock 20% | fair | 100.000 | 100.000 | 0 | 5.5 | 195 | 27.0 | 2.3 |
+| D: day-4 shock 20% | spend | 100.000 | 100.000 | 0 | 23.9 | 53 | 4.8 | 4.8 |
+| A: last-12h 30% | fair | 100.000 | 100.000 | 0 | 4.4 | 194 | 21.8 | 0.8 |
+| A: last-12h 30% | spend | 99.986 | 99.977 | 0 | 2.9 | 25 | 0.4 | 0.4 |
+| demand ×1.15 | fair | 100.000 | 100.000 | 0 | 3.0 | 169 | 22.0 | 0.7 |
+| demand ×1.15 | spend | 100.000 | 100.000 | 0 | 4.3 | 40 | 2.1 | 0.7 |
+| loads 30/30/20/20, demand ×1.15 | fair | 100.000 | 100.000 | 0 | 8.2 | 172 | 43.6 | 18.8 |
+| loads 30/30/20/20, demand ×1.15 | spend | 100.000 | 100.000 | 0 | 10.3 | 68 | 22.9 | 18.5 |
+| B down the last 2 days | fair | 100.000 | 100.000 | 0 | 16.8 | 145 | 20.7 | 4.6 |
+| B down the last 2 days | spend | 100.000 | 100.000 | 0 | 17.6 | 10 | 0.8 | 4.9 |

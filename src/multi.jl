@@ -33,6 +33,8 @@ Base.@kwdef struct MultiConfig
     timer_jitter::Float64 = 0.1            # each timer period is rebalance_every × (1 ± jitter); random phase
     rebalance_start::Float64 = 1440.0      # no rebalancing before (centers learn their profiles) [min]
     rebalance_tol::Float64 = 0.02          # donor gives only when surplus > tol × its target
+    objective::Symbol = :fair              # :fair  target = remaining budget split by need (equal throttle)
+                                           # :spend target = own need (move only what a center cannot spend)
     min_transfer::Float64 = 1e-4           # smaller transfers are not sent, fraction of B
     urgent_cooldown::Float64 = 15.0        # min time between urgent requests of one center [min]
     net_latency::Float64 = 0.0             # center ↔ center message delay [min]
@@ -59,6 +61,7 @@ function validate(mc::MultiConfig)
     mc.rebalance in (:none, :periodic, :on_demand, :both) ||
         error("rebalance must be :none, :periodic, :on_demand or :both")
     mc.round_mode in (:pull, :push, :sync) || error("round_mode must be :pull, :push or :sync")
+    mc.objective in (:fair, :spend) || error("objective must be :fair or :spend")
     mc.round_mode != :pull || (mc.net_latency == 0 && mc.net_jitter == 0) ||
         error("round_mode = :pull reads peers' current status instantly: needs zero latency (use :push)")
     nothing
@@ -170,9 +173,12 @@ function deliver!(net::Net, m::Msg, n, sites, mc)
 end
 
 """
-Center `k` gives its surplus to the centers in deficit. Allocation target: total remaining
-budget in proportion to forecast remaining demand, which gives every center the same pacing
-ratio. Remaining budgets include transfers still in flight, as far as `k` can tell.
+Center `k` gives its surplus to the centers in deficit. Allocation target (`objective`):
+- `:fair`: total remaining budget in proportion to forecast remaining demand, which gives every
+  center the same pacing ratio;
+- `:spend`: each center's own need, so budget moves only from a center that cannot spend it to
+  one that can.
+Remaining budgets include transfers still in flight, as far as `k` can tell.
 """
 function donate!(net::Net, k, n, sites, mc)
     K = length(sites)
@@ -184,9 +190,13 @@ function donate!(net::Net, k, n, sites, mc)
     incoming(j) = sum(max(sentv(i, j) - recvv(j, i), 0.0) for i in 1:K if i != j)
     R = [(j == k ? s.budget - s.Shat : net.R[k, j]) + incoming(j) for j in js]
     need = [j == k ? s.need : net.need[k, j] for j in js]
-    Ntot = sum(need)
-    Ntot > 0 || return
-    target = sum(R) .* need ./ Ntot
+    if mc.objective == :fair
+        Ntot = sum(need)
+        Ntot > 0 || return
+        target = sum(R) .* need ./ Ntot
+    else
+        target = max.(need, 0.0)
+    end
     me = findfirst(==(k), js)
     surplus = R[me] - target[me]
     surplus > mc.rebalance_tol * max(target[me], 0.0) || return

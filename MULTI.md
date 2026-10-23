@@ -60,7 +60,7 @@ The hard-cap invariant of center $k$ ties these together: $Y_k + E_k \le B_k(1-\
 | $R_k = B_k - \hat S_k$ | remaining budget: what $k$ has not spent yet (an estimate, because $\hat S_k$ is) |
 | $N_k$ | need: $k$'s forecast of the demand it could still spend until $T$ (§2.2) |
 | $\hat\Lambda_k(t, T)$, $h$ | $k$'s forecast of its clients' demand from $t$ to $T$ (client units); the forecast haircut (0.2) |
-| $R_k^*$ | target: the remaining budget $k$ should have, in proportion to its need (§2.2) |
+| $R_k^*$ | target: the remaining budget $k$ should have (§2.2). Fair share: the total remaining budget in proportion to need; spend only: $N_k$. |
 | tol | a center gives only when $R_k - R_k^* > \text{tol} \cdot R_k^*$ (tol = 0.02) |
 | $H_k = B_k - (Y_k + E_k)/(1-\delta)$ | headroom: the most $k$ can give away without breaking its invariant (a bound, §2.1) |
 | $x$ | amount of one transfer |
@@ -244,6 +244,28 @@ R_k^* = \Big(\sum_j R_j\Big)\,\frac{N_k}{\sum_j N_j}
 The ratio $R_k^*/N_k$ is then the same for all centers, so **every center paces at the same
 throttle**. This is what a single center serving all clients would do.
 
+**Who gives to whom.** A center gives when its remaining budget is above its target, not when it
+spends slowly. Suppose A spends fast and C slowly:
+
+- If C is slow because its **demand is low**, then $N_C$ is small, C's target is small, and C gives to A. *Example* (A and C only): need A 60, C 10; remaining A 50, C 20; the targets are 60 and 10, so C gives 10 to A.
+- If C is slow because it is **short of budget** (throttled), A gives to C, even if A could spend its own budget. *Example:* need A 60, C 60; remaining A 50, C 20; the targets are 35 and 35, so A gives 15 to C. Before the transfer A could serve 83 % of its remaining demand and C 33 %; after it, both serve 58 %.
+
+The second kind of transfer does not raise total spend: both centers would have spent their own
+budgets anyway. It exists for fairness, so that every center serves the same fraction of its
+demand.
+
+**Alternative objective: spend only.** If total spend is the only goal, the target can be each
+center's own need instead:
+
+```math
+R_k^* = N_k
+```
+
+A center then gives only what it cannot spend ($R_k > N_k$), and receives only up to what it can
+use ($N_j > R_j$). The second example above moves nothing. This saves transfers, but it is
+less fair, and it cannot undo a forecast error: budget that left a center by mistake comes back
+only if someone else cannot spend it. Table H compares the two objectives.
+
 ### 2.3 Protocol
 
 The centers' clocks are not synchronized, so the protocol never needs two centers to do something
@@ -406,6 +428,7 @@ needs for safety.
 | `timer_jitter` | 0.1 | each timer period is `rebalance_every` × (1 ± jitter), with a random phase per center |
 | `rebalance_start` | 1 day | no rebalancing before |
 | `rebalance_tol` | 0.02 | donor gives only when surplus > tol × its target |
+| `objective` | `:fair` | `:fair`: target in proportion to need (equal throttle); `:spend`: target = own need (move only what a center cannot spend) |
 | `urgent_cooldown` | 15 min | |
 | `net_latency`, `net_jitter` | 0, 0 | center ↔ center message delay (> 0 needs `:push`) |
 | `outages` | none | per center: list of (start, length) of outages |
@@ -561,10 +584,43 @@ Centers that act on their own unsynchronized timers do as well as the ideal sync
 40 per hour. *Push* is as good in these worlds, because statuses change slowly. It is the choice
 when messages have latency.
 
+### H. Objective: fair share vs spend only (mode `both`)
+
+| world | objective | spend mean % | min % | served spread (pp) | transfers | moved % | net % |
+|---|---|---|---|---|---|---|---|
+| loads as assumed | fair | 100.000 | 100.000 | 4.2 | 165 | 21.1 | 1.0 |
+| loads as assumed | spend | 100.000 | 100.000 | 2.4 | 0 | 0.0 | 0.0 |
+| loads 30/30/20/20 | fair | 100.000 | 100.000 | 9.9 | 171 | 41.5 | 17.8 |
+| loads 30/30/20/20 | spend | 100.000 | 100.000 | 36.8 | 16 | 9.9 | 9.9 |
+| random loads σ=0.3 | fair | 100.000 | 100.000 | 6.2 | 164 | 28.4 | 8.0 |
+| random loads σ=0.3 | spend | 100.000 | 100.000 | 29.4 | 15 | 2.4 | 2.4 |
+| D: day-4 shock 20% | fair | 100.000 | 100.000 | 5.5 | 195 | 27.0 | 2.3 |
+| D: day-4 shock 20% | spend | 100.000 | 100.000 | 23.9 | 53 | 4.8 | 4.8 |
+| A: last-12h 30% | fair | 100.000 | 100.000 | 4.4 | 194 | 21.8 | 0.8 |
+| A: last-12h 30% | spend | 99.986 | 99.977 | 2.9 | 25 | 0.4 | 0.4 |
+| demand ×1.15 | fair | 100.000 | 100.000 | 3.0 | 169 | 22.0 | 0.7 |
+| demand ×1.15 | spend | 100.000 | 100.000 | 4.3 | 40 | 2.1 | 0.7 |
+| loads 30/30/20/20, demand ×1.15 | fair | 100.000 | 100.000 | 8.2 | 172 | 43.6 | 18.8 |
+| loads 30/30/20/20, demand ×1.15 | spend | 100.000 | 100.000 | 10.3 | 68 | 22.9 | 18.5 |
+| B down the last 2 days | fair | 100.000 | 100.000 | 16.8 | 145 | 20.7 | 4.6 |
+| B down the last 2 days | spend | 100.000 | 100.000 | 17.6 | 10 | 0.8 | 4.9 |
+
+No run exceeded B with either objective.
+
+- **Total spend is the same.** Both objectives spend 100 % everywhere, except the late local drop, where spend only reaches 99.986 %. So the fair-share transfers are not needed for spend: they only buy fairness.
+- **Spend only makes far fewer transfers:** none at all when the loads are as assumed, and 10–70 per week elsewhere instead of 145–195. When the loads are as assumed it is also *fairer*, 2.4 pp against 4.2, because none of the forecast-driven churn of §4.B happens.
+- **When the split is wrong, spend only is unfair.** In the 30/30/20/20 world, A gives only the budget it cannot spend. B, C and D get just enough to spend their budgets, not enough to serve the same fraction of their demand as A: the spread is 37 pp, against 10 pp.
+- **Spend only cannot undo a forecast error.** During D's day-4 drop, D's forecast assumes the low demand lasts to the end of the period, so D gives budget away. When its demand comes back, nobody gives it back, because everyone else can spend what they hold. The spread ends at 24 pp, worse than a static split (10 pp, table B). The fair rule rebalances again as soon as D's need rises.
+- **When demand is close to the budget** (×1.15), the two rules come closer: most transfers are needed for spend anyway.
+
+A middle way is the fair rule with a larger tolerance: tol 0.1 cuts transfers to 32 per week with
+a spread of 11 pp in the 30/30/20/20 world (table C), far fairer than spend only at a similar
+number of transfers.
+
 ## 5. Recommended policy
 
 1. **Local invariant + debit-first transfers, limited to headroom.** This keeps the global cap with no global coordination, no estimates and no synchronized clocks.
-2. **Each center on its own timer**, every 1–4 h: pull the current statuses, allocate remaining budget in proportion to forecast need, and push surplus if above target. Only donors act.
+2. **Each center on its own timer**, every 1–4 h: pull the current statuses, allocate remaining budget in proportion to forecast need (fair share), and push surplus if above target. Only donors act. If transfers are costly, raise the tolerance rather than switch to spend only.
 3. **On-demand requests** when a center is denied grants, as a fast path at the end of the period and after local demand drops.
 4. **Takeover of a down center's unspent budget** by the lowest-index running center, never before $\tau_{max} + D_{max}$ and otherwise after 0.1 × the time left; a recovering center syncs its budget before it issues grants.
 5. **Cumulative sent/recv counters in every status**, in case messages ever have latency, so that transfers in flight are not paid twice.
@@ -585,5 +641,5 @@ when messages have latency.
 ```sh
 julia scripts/multi_run.jl                                   # example runs → out/multi_run_*.csv, out/multi_outage_*.csv
 julia --project=plots plots/plot_multi.jl                    # → out/multi.png, out/multi_outage.png
-julia -t auto scripts/multi_strategies.jl 40 > out/multi.md  # tables A–G (~2 min on 10 threads)
+julia -t auto scripts/multi_strategies.jl 40 > out/multi.md  # tables A–H (~2.5 min on 10 threads)
 ```

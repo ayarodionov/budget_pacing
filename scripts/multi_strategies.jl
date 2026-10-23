@@ -154,3 +154,18 @@ for (rname, kw) in rmodes
                                                  100a.moved, a.messages_per_h)) for (_, w) in gworlds]
     println("| $rname | ", join(cells, " | "), " |")
 end
+
+# ---------------- H. objective: fair share vs spend only ----------------
+hworlds = vcat(worlds, [
+    "loads 30/30/20/20, demand ×1.15" => with(base; load_true = [0.3, 0.3, 0.2, 0.2],
+                                              base = with(base.base; demand_ratio = 1.15)),
+    "B down the last 2 days" => with(base; outages = down(2, 5 * 1440.0, 2 * 1440.0)),
+])
+println("\n### H. Objective: fair share vs spend only (mode `both`)\n\n_$RUNS runs per row_\n")
+println("| world | objective | spend mean % | min % | runs over B | served spread (pp) | transfers | moved % | net % |")
+println("|---|---|---|---|---|---|---|---|---|")
+for (wname, w) in hworlds, obj in (:fair, :spend)
+    a = agg(with(w; objective = obj))
+    @printf("| %s | %s | %.3f | %.3f | %d | %.1f | %.0f | %.1f | %.1f |\n", wname, obj, 100a.spend_mean,
+            100a.spend_min, a.over_runs, 100a.served_spread, a.transfers, 100a.moved, 100a.net_moved)
+end
