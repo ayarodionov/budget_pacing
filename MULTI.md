@@ -156,7 +156,7 @@ $F$ to $B_j$. So at every moment
 ```
 
 and in particular $\sum_k B_k \le B$. Suppose instead the recipient were credited first: $k$
-announces "$x$ is yours", $j$ raises $B_j$ at once, and $k$ debits later. Then for a moment both
+announces that $x$ is now $j$'s, $j$ raises $B_j$ at once, and $k$ debits later. Then for a moment both
 centers could issue grants against the same $x$, and their clients could spend it twice. With
 debit first, the worst outcome is the opposite one: for a latency, nobody can spend $x$.
 
@@ -275,6 +275,54 @@ at the same moment. Each center acts on its own timer and on its own events:
 - **On demand.** A center whose grant requests were denied (it has hit its own cap) sends an *urgent* request to every running center, at most once every 15 min. Each recipient pulls fresh statuses in the same way and decides at once whether to donate.
 - **Down centers are left out.** With zero latency a request to a down center fails at once, so every center knows which peers are running. Down centers receive no requests or transfers, and the targets are computed over running centers only. What happens to a down center's own budget is the subject of §2.5.
 - **No rebalancing on day 1.** Until then the centers have no demand profile, and their need forecasts are unreliable.
+
+#### What A does when its timer fires
+
+```mermaid
+sequenceDiagram
+  participant A as Center A
+  participant B as Center B
+  participant C as Center C
+  participant D as Center D (down)
+  Note over A: timer fires (every 60 min ± 10 %)
+  A->>B: status?
+  B-->>A: R_B, N_B
+  A->>C: status?
+  C-->>A: R_C, N_C
+  A-xD: status?
+  Note over A,D: fails at once: D is down, leave it out
+  Note over A: targets R*_A, R*_B, R*_C<br/>surplus = R_A − R*_A
+  alt A is above its target by more than tol
+    Note over A: under A's lock:<br/>x = min(surplus, Σ deficits, H_A)<br/>B_A ← B_A − x (debit first)
+    A->>B: transfer x · d_B / Σd (if B is in deficit)
+    A->>C: transfer x · d_C / Σd (if C is in deficit)
+    Note over B,C: each credits its budget on arrival
+  else A is at or below its target
+    Note over A: do nothing, wait for a donor
+  end
+  Note over A: next timer in 60 min ± 10 %
+```
+
+1. **The timer fires.** A's timer runs on A's own clock, every 60 min ± 10 %, from day 2. While A is down, nothing happens; after recovery A first syncs its budget (§2.5) and then acts on its next timer.
+2. **Own status.** A takes its own remaining budget $R_A = B_A - \hat S_A$ and its need $N_A$. The single-center design keeps both up to date every minute.
+3. **Pull.** A asks every other center for its status: $R_j$, $N_j$, and the sent and received counters. With zero latency the replies arrive at once. A request to a down center fails at once, and that center is left out of everything below.
+4. **Targets.** From these numbers A computes the target $R_j^*$ of every running center, its own included (§2.2; fair share by default).
+5. **Decide.** A's surplus is $R_A - R_A^\ast$. If it is not above tol × $R_A^\ast$ (tol = 2 %), A is not a donor and stops here. A center below its target does not ask anyone for budget on its timer: it waits for a donor, or sends an urgent request when its grants are denied.
+6. **Deficits.** For every other running center, $d_j = \max(R_j^* - R_j, 0)$. If all are 0, A stops.
+7. **Amount.** Under A's lock, so that no grant is issued in between (§2.6), A computes its headroom $H_A = B_A - (Y_A + E_A)/(1-\delta)$ and the amount $x = \min(\text{surplus},\ \sum_j d_j,\ H_A)$.
+8. **Split and send.** Each center in deficit gets $x_j = x \cdot d_j / \sum d$; a share below the minimum transfer (0.01 % of B) is skipped. For each share, A lowers its own budget, $B_A \leftarrow B_A - x_j$, adds $x_j$ to its sent counter, and sends the transfer.
+9. **The recipient credits.** On arrival, $j$ raises its own budget, $B_j \leftarrow B_j + x_j$, under its own lock, and adds $x_j$ to its received counter. If $j$ went down in the meantime, the transfer fails and A gets $x_j$ back.
+10. **Next timer.** A sets its next timer 60 min ± 10 % later.
+
+A changes only its own budget; each recipient raises its own. A's open grants are not touched.
+With a lower $B_A$, A's pacing slows down from its next grants on (MODEL.md §4.3). One timer costs
+two messages per running peer for the pull, plus one per transfer.
+
+When A receives an **urgent request** instead, it runs the same steps 2–9 at once, without waiting
+for its timer.
+
+In the code: the timer is in `simulate_multi`, step 3 is `pull_status!`, and steps 4–8 are
+`donate!` (`src/multi.jl`).
 
 #### One donor at a time, no synchronized clocks
 
@@ -638,8 +686,8 @@ has already spent. (b) Total spend: 95.1 % with a frozen budget, 100 % with take
 | takeover after 10 min (too early!) | 93.369 | 6 | 1.25 | 57 |
 
 Taken over too early, a down center's clients are still spending their open grants. They spend
-budget that has already been given to others, and the hard cap breaks. Waiting $\tau_{max} +
-D_{max}$ is what makes takeover safe.
+budget that has already been given to others, and the hard cap breaks. Waiting
+$\tau_{max} + D_{max}$ is what makes takeover safe.
 
 ### G. Round mode: no synchronized clocks needed (mode `both`)
 
