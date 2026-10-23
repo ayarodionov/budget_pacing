@@ -397,7 +397,9 @@ directly; this is the value the recovery sync would return.
 the same time". So one center is responsible: the running center with the lowest index (A, unless
 A is down). It needs no clock: when its own measure of the outage passes the wait, it performs the
 takeover and tells the others. It measures the outage from when it noticed it, which is never
-before the outage started, so its wait is never too short.
+before the outage started, so its wait is never too short. As a second guard, every takeover
+carries an id, the down center plus the start of its outage, so that a duplicate does nothing
+(§2.6).
 
 **When to take over.** Taking over at the earliest safe moment wastes effort when the outage is
 short: the budget leaves and has to come back. Waiting is costly near the end, when little time is
@@ -409,6 +411,76 @@ left to spend it. The default rule waits in proportion to the time left:
 
 With 4 days left it waits 9.6 h; with 1 day left, 2.4 h; in the last 15 h, only the 1.5 h it
 needs for safety.
+
+### 2.6 Concurrency
+
+A donor's action is not atomic: it pulls the statuses, computes the targets, debits itself and
+sends the transfers. Another center may do the same at the same moment, and there is no global
+lock. This section explains why none is needed for the hard cap, what concurrency can still cost,
+and the one place where it must be prevented.
+
+#### Safety needs only local atomicity
+
+Each center is the only writer of its own budget $B_k$; no other center ever changes it. Inside a
+center, two operations must be serialized by a local lock:
+
+1. **issuing a grant:** check $Y_k + E_k + \beta_{max}\, g \le B_k(1-\delta)$, then add the grant;
+2. **donating:** compute the headroom $H_k$, then debit $B_k$.
+
+Without the lock, a grant could be issued against budget that was just given away. With it, every
+center keeps its own invariant whatever the others do at the same moment, and debit first keeps
+$\sum_k B_k + F = B$ (§2.1). So the global cap holds with no global lock, no leader and no
+synchronized clocks. Concurrency can only make the *allocation* worse, never cause overspend.
+
+#### Under the fair rule, concurrent donors cannot over-fill a deficit
+
+Suppose donors A and B pull at the same moment and see the same snapshot, with surpluses $s_A$,
+$s_B$ and deficits $d_j$. Each one sends only its own share of every deficit, so center $j$ gets
+
+```math
+\frac{s_A\, d_j}{\sum d} + \frac{s_B\, d_j}{\sum d} = \frac{(s_A + s_B)\, d_j}{\sum d} \le d_j
+```
+
+Under the fair rule the targets add up to the total remaining budget, so the total surplus equals
+the total deficit and $s_A + s_B \le \sum d$. Two donors acting at the same time give exactly
+what they would have given one after the other. If A goes first, every deficit shrinks by the same
+factor $1 - s_A/\sum d$, and B then sends $s_B\, d_j/\sum d$ to each center, as it would have
+from the old snapshot. This is why the synchronized mode in table G gives the same results as the
+unsynchronized ones.
+
+#### Where concurrency does cost something
+
+- **Inconsistent reads.** A center may pull A's status after A has debited a transfer but before the recipient has credited it. It then sees less total budget than there is, and its targets are slightly off. The next timer corrects it.
+- **The spend-only rule** (§2.2). Surplus and deficit no longer balance, so concurrent donors can over-fill the same deficit. *Example:* C can use 10 more; A and B each have 20 they cannot spend. Acting at the same moment, each sends 10 to C, so C gets 20. C is now 10 above its need and gives it back on its next timer.
+
+Neither case can cause overspend, and both cost only transfers and messages. In practice they are
+rare: a pull, decide and send takes milliseconds, against timers 60 min apart with random phases.
+
+#### Preventing double fills: recipient-side reservation
+
+If double fills must be ruled out, the recipient can serialize them, using only its own lock:
+
+1. The donor asks the recipient: "how much do you need?"
+2. Under its own lock, the recipient answers its current deficit $d_j$ minus any amount already reserved, and records the answer as *reserved incoming*.
+3. The donor debits itself (debit first) and sends at most the reserved amount.
+4. On arrival, the recipient credits the transfer and releases the reservation. A reservation that is not used within a timeout is released too.
+
+A second donor asking at the same moment is told the reduced deficit. This needs no clock and no
+leader, and each transfer costs one more request-reply. Heavier alternatives are a token passed
+A → B → C → D (only the holder may give) or a single leader that does all rebalancing. Both
+serialize everything, but both need extra handling when the token holder or the leader is down.
+
+#### Takeover must not run twice
+
+Takeover is the one operation where concurrency is unsafe. If two centers took over the same down
+center, its free budget would be given out twice, and the total of the shares would exceed $B$. Two
+guards prevent it:
+
+- **one performer:** only the running center with the lowest index performs takeovers (§2.5);
+- **an idempotent id:** each takeover carries the id (down center, start of its outage). Every recipient credits a given id only once, and the recovering center applies it only once. If the responsibility changes hands during an outage (for example, A comes back while B is performing the takeover), a duplicate with the same id does nothing.
+
+In the simulator, two centers never act in exactly the same instant (§6), so none of these
+effects are measured yet.
 
 ## 3. Simulation setup
 
@@ -619,10 +691,10 @@ number of transfers.
 
 ## 5. Recommended policy
 
-1. **Local invariant + debit-first transfers, limited to headroom.** This keeps the global cap with no global coordination, no estimates and no synchronized clocks.
+1. **Local invariant + debit-first transfers, limited to headroom**, with grant issue and donation serialized by a local lock inside each center. This keeps the global cap with no global lock, no estimates and no synchronized clocks (§2.6).
 2. **Each center on its own timer**, every 1–4 h: pull the current statuses, allocate remaining budget in proportion to forecast need (fair share), and push surplus if above target. Only donors act. If transfers are costly, raise the tolerance rather than switch to spend only.
 3. **On-demand requests** when a center is denied grants, as a fast path at the end of the period and after local demand drops.
-4. **Takeover of a down center's unspent budget** by the lowest-index running center, never before $\tau_{max} + D_{max}$ and otherwise after 0.1 × the time left; a recovering center syncs its budget before it issues grants.
+4. **Takeover of a down center's unspent budget** by the lowest-index running center, with an idempotent takeover id, never before $\tau_{max} + D_{max}$ and otherwise after 0.1 × the time left; a recovering center syncs its budget before it issues grants.
 5. **Cumulative sent/recv counters in every status**, in case messages ever have latency, so that transfers in flight are not paid twice.
 6. **Initial split by assumed load**, with no rebalancing until the profiles are learned (or warm-start them).
 
@@ -630,7 +702,7 @@ number of transfers.
 
 - **Forecasts know nothing about weekly patterns.** With time zones this causes churn and some unfairness (§4.B). A weekly profile warm-started from previous periods would remove most of it.
 - **Only crashes are modelled, not partitions.** A center that is running but cannot reach its peers would keep issuing grants on its own budget, and taking that budget over would break the cap. Telling the two apart needs a fence, for example a lease: a center may issue grants only while it holds a lease that its peers renew.
-- **Concurrent actions are not modelled.** In the simulator, two centers never act in exactly the same instant. In reality two donors could pull at the same moment and both fill the same deficit. That is safe (each gives only its own headroom) and the next timer corrects it. Two centers performing the same takeover would not be safe, which is why one center is responsible for it.
+- **Concurrent actions are not modelled.** In the simulator, two centers never act in exactly the same instant. §2.6 explains why this does not matter for the hard cap, what it can cost, and how to prevent double fills and double takeovers. Modelling it (donors whose timers fire close together acting on the same stale snapshot) would measure the cost.
 - **Message loss is not modelled.** With debit first, a lost transfer is lost budget: safe, but it causes underspend. A real protocol needs acknowledgements and retries with idempotent transfer ids, or a reconciliation through the DB.
 - **The DB is assumed to report per-center spend.** If it reported only the total, the centers would have to exchange exposure, and the local-invariant argument would no longer work. Takeover also relies on every center being able to read a down center's spend.
 - **No pooled baseline.** A single center serving all the clients in all time zones would be the upper bound for fairness. The "every 5 min" row is used instead.
