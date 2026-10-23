@@ -23,6 +23,50 @@ share one budget $B$ and one period $T$.
 The period is one absolute week. So each center's weekend falls at a different part of it:
 D's weekend starts 13 h before A's, and D has 13 h of its Monday left after its weekend ends.
 
+### 1.1 Notation
+
+Amounts are money as the DB records it ("DB units") unless stated. The single-center symbols
+are defined in MODEL.md §2; here they get an index $k$ for the center.
+
+**Centers and time**
+
+| Symbol | Meaning |
+|---|---|
+| $k$, $j$, $i$ | center indices (A, B, C, D). In the rules, $k$ is usually the center that acts (the donor), $j$ another center (a recipient, or the center that is down), $i$ any sender. |
+| $t$, $T$ | current time; end of the period (one week) |
+| $L$ | center ↔ center message latency (0 by default) |
+
+**Budget and spend of center $k$**
+
+| Symbol | Meaning |
+|---|---|
+| $B$ | total budget: the hard cap on the total DB spend of all centers |
+| $B_k$ | center $k$'s current share of the budget. It changes only through transfers (§2.1) and takeover (§2.5). At the start, $B_k = B \cdot \text{load}_k$. |
+| $S_k(t)$ | true cumulative spend of $k$'s clients, as recorded in the DB |
+| $D$, $D_{max}$ | DB delay; its upper bound, used for safety |
+| $Y_k$ | $k$'s spend as $k$ sees it in the DB: $Y_k(t) = S_k(t - D)$. The only authoritative number, but late. |
+| $\hat S_k$ | $k$'s nowcast of $S_k$: $Y_k$ plus the spend its clients reported in the last $D$, converted with $\hat\beta_k$ (MODEL.md §4.2). An estimate. |
+| $E_k$ | $k$'s exposure: an upper bound on what its open grants may still add to the DB beyond $Y_k$. It covers spend that has happened but is not in the DB yet, plus the unused amounts of open grants, multiplied by $\beta_{max}$ (MODEL.md §4.1). A bound, not an estimate. |
+| $\beta_{max}$, $\hat\beta_k$ | upper bound of the ratio DB amount / client-counted amount; $k$'s estimate of that ratio |
+| $\delta$ | extra safety margin, as a fraction of the budget (0 by default) |
+| $\tau_{max}$ | longest grant duration (60 min) |
+
+The hard-cap invariant of center $k$ ties these together: $Y_k + E_k \le B_k(1-\delta)$.
+
+**Rebalancing**
+
+| Symbol | Meaning |
+|---|---|
+| $R_k = B_k - \hat S_k$ | remaining budget: what $k$ has not spent yet (an estimate, because $\hat S_k$ is) |
+| $N_k$ | need: $k$'s forecast of the demand it could still spend until $T$ (§2.2) |
+| $\hat\Lambda_k(t, T)$, $h$ | $k$'s forecast of its clients' demand from $t$ to $T$ (client units); the forecast haircut (0.2) |
+| $R_k^*$ | target: the remaining budget $k$ should have, in proportion to its need (§2.2) |
+| tol | a center gives only when $R_k - R_k^* > \text{tol} \cdot R_k^*$ (tol = 0.02) |
+| $H_k = B_k - (Y_k + E_k)/(1-\delta)$ | headroom: the most $k$ can give away without breaking its invariant (a bound, §2.1) |
+| $x$ | amount of one transfer |
+| $F$ | total of transfers in flight (always 0 with zero latency) |
+| sent, received | cumulative transfers from $i$ to $j$, as counted by $i$ and by $j$ (§2.4) |
+
 ## 2. Design
 
 ```mermaid
