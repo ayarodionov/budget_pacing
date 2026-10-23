@@ -61,7 +61,7 @@ The hard-cap invariant of center $k$ ties these together: $Y_k + E_k \le B_k(1-\
 | $N_k$ | need: $k$'s forecast of the demand it could still spend until $T$ (§2.2) |
 | $\hat\Lambda_k(t, T)$, $h$ | $k$'s forecast of its clients' demand from $t$ to $T$ (client units); the forecast haircut (0.2) |
 | $R_k^*$ | target: the remaining budget $k$ should have (§2.2). Fair share: the total remaining budget in proportion to need; spend only: $N_k$. |
-| tol | a center gives only when $R_k - R_k^* > \text{tol} \cdot R_k^*$ (tol = 0.02) |
+| tol | rebalancing tolerance, a dead band against tiny transfers: a center gives only when $R_k - R_k^* > \text{tol} \cdot R_k^*$, i.e. when its surplus is more than tol of its own target (tol = 0.02) |
 | $H_k = B_k - (Y_k + E_k)/(1-\delta)$ | headroom: the most $k$ can give away without breaking its invariant (a bound, §2.1) |
 | $x$ | amount of one transfer |
 | $F$ | total of transfers in flight (always 0 with zero latency) |
@@ -271,7 +271,7 @@ only if someone else cannot spend it. Table H compares the two objectives.
 The centers' clocks are not synchronized, so the protocol never needs two centers to do something
 at the same moment. Each center acts on its own timer and on its own events:
 
-- **Periodic, on the center's own timer** (every 60 min ± 10 %, from day 2, with a random phase). When its timer fires, a center **pulls** the current status $(R_j, N_j)$ from every running center. With zero latency the replies are instant, so it has a fresh view of all centers. It computes the targets $R_k^*$ (§2.2). If it is above its target by more than tol (2 %), it pushes its surplus to the centers in deficit, in proportion to their deficits. If it is below target, it does nothing and waits for a donor.
+- **Periodic, on the center's own timer** (every 60 min ± 10 %, from day 2, with a random phase). When its timer fires, a center **pulls** the current status $(R_j, N_j)$ from every running center. With zero latency the replies are instant, so it has a fresh view of all centers. It computes the targets $R_k^*$ (§2.2). If it is above its target by more than tol = 2 % of that target, it pushes its surplus to the centers in deficit, in proportion to their deficits. If it is below target, it does nothing and waits for a donor.
 - **On demand.** A center whose grant requests were denied (it has hit its own cap) sends an *urgent* request to every running center, at most once every 15 min. Each recipient pulls fresh statuses in the same way and decides at once whether to donate.
 - **Down centers are left out.** With zero latency a request to a down center fails at once, so every center knows which peers are running. Down centers receive no requests or transfers, and the targets are computed over running centers only. What happens to a down center's own budget is the subject of §2.5.
 - **No rebalancing on day 1.** Until then the centers have no demand profile, and their need forecasts are unreliable.
@@ -292,12 +292,12 @@ sequenceDiagram
   A-xD: status?
   Note over A,D: fails at once: D is down, leave it out
   Note over A: targets R*_A, R*_B, R*_C<br/>surplus = R_A − R*_A
-  alt A is above its target by more than tol
+  alt A is above its target by more than tol = 2 % of its target
     Note over A: under A's lock:<br/>x = min(surplus, Σ deficits, H_A)<br/>B_A ← B_A − x (debit first)
     A->>B: transfer x · d_B / Σd (if B is in deficit)
     A->>C: transfer x · d_C / Σd (if C is in deficit)
     Note over B,C: each credits its budget on arrival
-  else A is at or below its target
+  else otherwise: below its target, or surplus within the 2 % dead band
     Note over A: do nothing, wait for a donor
   end
   Note over A: next timer in 60 min ± 10 %
@@ -307,7 +307,7 @@ sequenceDiagram
 2. **Own status.** A takes its own remaining budget $R_A = B_A - \hat S_A$ and its need $N_A$. The single-center design keeps both up to date every minute.
 3. **Pull.** A asks every other center for its status: $R_j$, $N_j$, and the sent and received counters. With zero latency the replies arrive at once. A request to a down center fails at once, and that center is left out of everything below.
 4. **Targets.** From these numbers A computes the target $R_j^*$ of every running center, its own included (§2.2; fair share by default).
-5. **Decide.** A's surplus is $R_A - R_A^\ast$. If it is not above tol × $R_A^\ast$ (tol = 2 %), A is not a donor and stops here. A center below its target does not ask anyone for budget on its timer: it waits for a donor, or sends an urgent request when its grants are denied.
+5. **Decide.** A's surplus is $R_A - R_A^\ast$. A is a donor only if the surplus is more than tol × $R_A^\ast$, where tol (`rebalance_tol`, 0.02) is a dead band relative to A's own target. With a target of 200, A gives only when its remaining budget is above 204, and then it gives its whole surplus, not just the part above 204. The dead band keeps small wobbles of the need forecasts from causing transfers back and forth: without it, a week has 419 transfers instead of 171, for almost the same fairness (table C). Otherwise A is not a donor and stops here. A center below its target does not ask anyone for budget on its timer: it waits for a donor, or sends an urgent request when its grants are denied.
 6. **Deficits.** For every other running center, $d_j = \max(R_j^* - R_j, 0)$. If all are 0, A stops.
 7. **Amount.** Under A's lock, so that no grant is issued in between (§2.6), A computes its headroom $H_A = B_A - (Y_A + E_A)/(1-\delta)$ and the amount $x = \min(\text{surplus},\ \sum_j d_j,\ H_A)$.
 8. **Split and send.** Each center in deficit gets $x_j = x \cdot d_j / \sum d$; a share below the minimum transfer (0.01 % of B) is skipped. For each share, A lowers its own budget, $B_A \leftarrow B_A - x_j$, adds $x_j$ to its sent counter, and sends the transfer.
