@@ -319,11 +319,60 @@ A changes only its own budget; each recipient raises its own. A's open grants ar
 With a lower $B_A$, A's pacing slows down from its next grants on (MODEL.md §4.3). One timer costs
 two messages per running peer for the pull, plus one per transfer.
 
-When A receives an **urgent request** instead, it runs the same steps 2–9 at once, without waiting
-for its timer.
-
 In the code: the timer is in `simulate_multi`, step 3 is `pull_status!`, and steps 4–8 are
 `donate!` (`src/multi.jl`).
+
+#### What happens when A urgently needs more
+
+```mermaid
+sequenceDiagram
+  participant K as Clients of A
+  participant A as Center A
+  participant B as Center B
+  participant C as Center C
+  participant D as Center D (down)
+  K->>A: grant request
+  Note over A: cap check fails:<br/>Y_A + E_A + β_max · g > B_A(1 − δ)
+  A--xK: denied (the request stays pending)
+  Note over A: last urgent request ≥ 15 min ago?
+  A->>B: URGENT + A's status (R_A, N_A)
+  A->>C: URGENT + A's status (R_A, N_A)
+  A-xD: URGENT
+  Note over A,D: fails at once: D is down, leave it out
+  Note over B: pulls fresh statuses of A, C<br/>targets, surplus_B, deficits d_j
+  alt B is a donor (surplus > 2 % of its target)
+    Note over B: under B's lock:<br/>x_B = min(surplus_B, Σd, H_B), debit B_B
+    B->>A: transfer x_B · d_A / Σd
+    B->>C: transfer x_B · d_C / Σd (if C is in deficit)
+  else otherwise
+    Note over B: nothing
+  end
+  Note over C: pulls fresh statuses of A, B<br/>(already including B's transfers)<br/>same decision as B
+  alt C is a donor
+    C->>A: transfer x_C · d_A / Σd
+  end
+  Note over A: credits each transfer under its lock<br/>headroom grows
+  A->>K: pending request granted at the next step, if the headroom now allows
+```
+
+1. **Trigger.** One of A's clients asks for a grant (a renewal, or a larger grant because its demand rose), and A's cap check fails: A has no headroom left for it. A denies the request. The client keeps its request pending and A retries it every step. This is not a timer: it happens when A hits its own cap, from day 2 on.
+2. **Cooldown.** If A sent an urgent request less than 15 min ago, it does nothing more now. The cooldown keeps a center that stays short from flooding the others.
+3. **Urgent request.** A sends an urgent request with its current status ($R_A$, $N_A$) to every running center. A request to a down center fails at once, and that center is left out.
+4. **Each recipient decides at once,** one after another. It runs steps 2–9 of the timer walkthrough without waiting for its own timer: it pulls fresh statuses from all running centers, computes the targets, and gives if it is a donor (surplus more than 2 % of its target). It gives to *all* centers in deficit, in proportion to their deficits. A is one of them, usually with the largest deficit, but it gets no special priority.
+5. **No double fill.** With zero latency, B's transfers arrive before C pulls. So C sees deficits that are already reduced by what B sent, and fills only what is left.
+6. **A credits** each transfer under its own lock. Its headroom grows, and at the next step the pending client requests are granted as far as the new headroom allows.
+7. **If no one is a donor,** nothing moves. Then A is not short of its fair share: no center is more than 2 % above its target, and A simply has more demand than its share of the budget. A's pacing and its cap keep it within that share, and its clients are served at A's throttle.
+
+**When it happens.** A center that is short of budget mostly lowers its throttle instead of hitting
+its cap, so urgent requests are rare in the middle of the period. They come:
+- in the last hour, when every center serves all its demand (the finish buffer, MODEL.md §4.3);
+- after a sudden local rise in demand;
+- right after recovery from a takeover, when the center starts with zero headroom (§2.5).
+
+This is why on-demand rebalancing alone spends the budget, but late and unfairly (§4.A).
+
+In the code: `denied_now` in `step!` (`src/simulate.jl`) triggers it in `simulate_multi`; the
+recipient side is `deliver!`, which calls `pull_status!` and `donate!` (`src/multi.jl`).
 
 #### One donor at a time, no synchronized clocks
 
