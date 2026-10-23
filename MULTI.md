@@ -374,6 +374,35 @@ This is why on-demand rebalancing alone spends the budget, but late and unfairly
 In the code: `denied_now` in `step!` (`src/simulate.jl`) triggers it in `simulate_multi`; the
 recipient side is `deliver!`, which calls `pull_status!` and `donate!` (`src/multi.jl`).
 
+#### Two urgent requests at once
+
+Suppose A and B are both denied grants at about the same time, and both send an urgent request.
+Both get help, in proportion to their deficits, and it does not matter who asked first.
+
+A center that receives an urgent request does not answer only the requester. It pulls fresh
+statuses, sees *every* center in deficit, and splits its surplus over all of them. So the first
+request already serves both centers that are short:
+
+1. **A's request** reaches B, C and D. B is below its own target and gives nothing: a center in deficit never gives, so A and B cannot take budget from each other. C and D pull fresh statuses, see both deficits $d_A$ and $d_B$, and, if they are donors, give each its share $x \cdot d_j / \Sigma d$.
+2. **B's request** reaches A, C and D. A is in deficit and gives nothing. C and D pull again, and their views already include the transfers they have just made. If they still have a surplus, they give the rest; usually they are on target by now, and nothing more happens.
+
+*Example:* A's deficit is 6, B's is 4, and only C has a surplus.
+
+| C's surplus | after A's request | after B's request | result |
+|---|---|---|---|
+| 15 | C gives min(15, 10) = 10: 6 to A, 4 to B | nothing left to fill | both filled |
+| 5 | C gives 5: 3 to A, 2 to B | C is on target: nothing | both filled to 50 % |
+
+When there is not enough, both are filled to the same fraction of their deficits, so asking first
+gives no advantage.
+
+- **Requests arriving at the same moment.** If both reach C at once, C's local lock handles them one after the other, and the second sees the first one's transfers. If two donors, C and D, handle them at the same moment from the same snapshot, they still cannot over-fill: under the fair rule each donor gives only its own share of each deficit (§2.6).
+- **No donor.** Nothing moves. Both centers stay within their fair shares, and each may send another request after its own 15 min cooldown.
+- **Cost.** The second request usually costs a round of pulls that changes nothing. If that matters, a center could skip its urgent request when it has just received a transfer.
+
+In the simulator, urgent requests in the same minute are handled in index order (A before B), and
+each recipient handles them one after the other, as above.
+
 #### One donor at a time, no synchronized clocks
 
 Only donors move budget. Every donor acts at its own moment, from a view that is fresh at that
