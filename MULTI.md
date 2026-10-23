@@ -62,6 +62,7 @@ The hard-cap invariant of center $k$ ties these together: $Y_k + E_k \le B_k(1-\
 | $\hat\Lambda_k(t, T)$, $h$ | $k$'s forecast of its clients' demand from $t$ to $T$ (client units); the forecast haircut (0.2) |
 | $R_k^*$ | target: the remaining budget $k$ should have (§2.2). Fair share: the total remaining budget in proportion to need; spend only: $N_k$. |
 | tol | rebalancing tolerance, a dead band against tiny transfers: a center gives only when $R_k - R_k^* > \text{tol} \cdot R_k^*$, i.e. when its surplus is more than tol of its own target (tol = 0.02) |
+| $d_j = \max(R_j^* - R_j, 0)$ | deficit of center $j$: how far its remaining budget is below its target (0 if at or above it); $\Sigma d$ is the sum over all running centers other than the donor. A donor gives $j$ the share $x \cdot d_j / \Sigma d$ (§2.3). |
 | $H_k = B_k - (Y_k + E_k)/(1-\delta)$ | headroom: the most $k$ can give away without breaking its invariant (a bound, §2.1) |
 | $x$ | amount of one transfer |
 | $F$ | total of transfers in flight (always 0 with zero latency) |
@@ -291,9 +292,9 @@ sequenceDiagram
   C-->>A: R_C, N_C
   A-xD: status?
   Note over A,D: fails at once: D is down, leave it out
-  Note over A: targets R*_A, R*_B, R*_C<br/>surplus = R_A − R*_A
+  Note over A: targets R*_A, R*_B, R*_C<br/>surplus = R_A − R*_A<br/>deficits d_B = max(R*_B − R_B, 0), d_C = max(R*_C − R_C, 0)<br/>Σd = d_B + d_C
   alt A is above its target by more than tol = 2 % of its target
-    Note over A: under A's lock:<br/>x = min(surplus, Σ deficits, H_A)<br/>B_A ← B_A − x (debit first)
+    Note over A: under A's lock:<br/>x = min(surplus, Σd, H_A)<br/>B_A ← B_A − x (debit first)
     A->>B: transfer x · d_B / Σd (if B is in deficit)
     A->>C: transfer x · d_C / Σd (if C is in deficit)
     Note over B,C: each credits its budget on arrival
