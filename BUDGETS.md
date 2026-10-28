@@ -90,7 +90,7 @@ difficulties, it adds those that come from running many budgets:
 | one daily shape for all budgets, scale per budget | the shape can be learned from other budgets, the scale cannot | shared shape × own level (§4.2) |
 | sizes over two orders of magnitude | a small budget spread over 50 clients has tiny grants | grant granularity (§6.C) |
 | demand ratio 0.6–2.0 | some budgets cannot be filled, some have plenty of demand | achieved metric, feasibility alert |
-| many budgets at once | every client holds a grant per budget | grant traffic (§6.E) |
+| many budgets at once | every client holds a grant per budget | bundling of grant requests (§6.E, §6.F) |
 | per-budget noise and DB series | budgets must be paced and capped separately | per-budget invariant (§4.1) |
 
 **It is deliberately unfavourable** for the shared profile, as for the single center: the center
@@ -238,6 +238,7 @@ own token bucket, renewal, re-grant and partial return. Two rules are relative t
 |---|---|
 | duration | $\tau = \text{clamp}(0.01\,(t_m + T_m - t),\ 5,\ 60)$ min, from the budget's own end; no grant outlives its budget |
 | minimum grant | $1 \cdot B_m / 10^6$: grants below it are not issued. With a fixed minimum, small budgets spread over 50 clients lose their small grants (§6.C). |
+| bundling | when a client sends a request for one budget, it also renews, in the same message, every other grant it would have to renew within 5 min (`bundle_window`). The center serves all of them in the same minute, each under its own budget's cap. Renewing a few minutes early replaces the old grant, whose unused part is freed at once. Grants of one client then tend to expire together, so their next renewals bundle as well (§6.F). |
 
 ### 4.5 Budget lifecycle
 
@@ -267,6 +268,7 @@ demand cannot fill its remaining budget. Budgets shorter than a day never raise 
 | `budgets` | none | explicit list of (B, start, length, ratio), replacing the random draw |
 | `profile` | `:shared` | `:shared` or `:isolated` (§4.2) |
 | `scale_min_grant` | true | minimum grant $\propto B_m$ (§4.4) |
+| `bundle_window` | 5 min | a request also renews the client's other grants due within this window (0: no bundling; §4.4) |
 
 Each configuration is run with 20 random seeds, i.e. 20 portfolios. Budgets are pooled over all
 portfolios. Metrics:
@@ -279,7 +281,7 @@ portfolios. Metrics:
 ## 6. Strategies and results
 
 `out/budgets.md`; 20 portfolios of 20 budgets per cell. No budget exceeded its cap in any cell of
-tables A, B, C and E.
+tables A, B, C, E and F.
 
 ### A. Isolated vs shared demand profile
 
@@ -287,8 +289,8 @@ _cell: weighted % achieved / 5th percentile % / share of budgets ≥ 99.9 %_
 
 | profile | default: demand 0.6–2×, 1–10 d | demand 1.0–1.2×, 1–10 d | demand 1.0–1.2×, 6 h – 2 d | demand 0.6–0.95× (cannot fill) | 50 budgets, demand 1.0–1.2×, 6 h – 2 d |
 |---|---|---|---|---|---|
-| isolated | 99.85 / 99.41 / 82 | 99.80 / 99.90 / 95 | 98.69 / 89.11 / 74 | 99.54 / 98.66 / 42 | 98.46 / 88.73 / 71 |
-| **shared** | 99.91 / 99.46 / 80 | 99.98 / 100.00 / 98 | 99.81 / 99.57 / 90 | 99.75 / 99.17 / 39 | 99.92 / 99.80 / 91 |
+| isolated | 99.85 / 99.42 / 82 | 99.80 / 99.90 / 95 | 98.69 / 89.10 / 74 | 99.54 / 98.65 / 42 | 98.45 / 88.71 / 71 |
+| **shared** | 99.91 / 99.48 / 80 | 99.98 / 100.00 / 98 | 99.81 / 99.56 / 90 | 99.75 / 99.19 / 38 | 99.92 / 99.80 / 91 |
 
 - **With plenty of demand and long budgets** (default), the forecast hardly matters: both reach 99.9 %.
 - **Short budgets with tight demand** are where the shared profile matters. Isolated, the worst 5 % of budgets spend less than 89 % of what they could; shared, more than 99.6 %. The share of budgets spent to 99.9 % rises from 74 % to 90 %.
@@ -300,11 +302,11 @@ _cell: weighted % achieved / 5th percentile % / share of budgets ≥ 99.9 %_
 | budgets | count | isolated | shared |
 |---|---|---|---|
 | ≤ 12 h | 135 | 99.08 / 89.70 / 66 | 99.76 / 99.24 / 81 |
-| 12–24 h | 131 | 97.55 / 84.94 / 66 | 99.78 / 99.09 / 92 |
-| 1–2 d | 134 | 99.57 / 98.26 / 90 | 99.89 / 99.98 / 96 |
+| 12–24 h | 131 | 97.54 / 84.93 / 66 | 99.78 / 99.09 / 92 |
+| 1–2 d | 134 | 99.57 / 98.23 / 90 | 99.89 / 99.98 / 96 |
 | starts before any other budget | 20 | 98.93 / 89.14 / 75 | 98.93 / 89.14 / 75 |
-| starts after at least one other | 380 | 98.68 / 89.11 / 74 | 99.86 / 99.64 / 91 |
-| starts 06–18 h | 210 | 97.77 / 86.17 / 60 | 99.74 / 98.83 / 90 |
+| starts after at least one other | 380 | 98.68 / 89.10 / 74 | 99.86 / 99.64 / 91 |
+| starts 06–18 h | 210 | 97.76 / 86.15 / 60 | 99.74 / 98.82 / 90 |
 | starts 18–06 h | 190 | 99.96 / 99.70 / 89 | 99.90 / 99.70 / 90 |
 
 - **The mechanism is the daytime start.** Isolated budgets that start between 06:00 and 18:00 extrapolate the daytime peak and spend 97.8 %; those that start at night spend 99.96 %. With the shared profile both are at 99.7–99.9 %.
@@ -322,8 +324,8 @@ period: isolated budgets fall behind in the second half and do not catch up._
 
 | variant | weighted % | mean % | 5th pct % | worst % | ≥ 99.9 % | grants/min |
 |---|---|---|---|---|---|---|
-| min grant scales with the budget (default) | 99.91 | 99.89 | 99.46 | 94.30 | 80 % | 20.8 |
-| fixed min grant (1 unit for every budget) | 99.62 | 96.92 | 82.39 | 53.92 | 55 % | 14.7 |
+| min grant scales with the budget (default) | 99.91 | 99.89 | 99.48 | 94.29 | 80 % | 22.0 |
+| fixed min grant (1 unit for every budget) | 99.62 | 96.92 | 82.39 | 53.93 | 55 % | 15.4 |
 
 A small budget spread over 50 clients has small grants. With a fixed minimum grant, many of them
 fall below it and are not issued, and the smallest budgets spend as little as 54 %. The minimum
@@ -334,8 +336,8 @@ grant must scale with the budget (or with its rate per client).
 | variant | weighted % | budgets over cap (of 400) | max over (‰ of $B_m$) |
 |---|---|---|---|
 | assumptions hold (default) | 99.91 | 0 | 0.00 |
-| β_true = 1.08 > β_max = 1.06 | 99.92 | 308 | 0.53 |
-| D = 30 ± 15 min, D_max = 30 | 99.98 | 287 | 6.38 |
+| β_true = 1.08 > β_max = 1.06 | 99.92 | 308 | 0.51 |
+| D = 30 ± 15 min, D_max = 30 | 99.98 | 288 | 6.62 |
 
 As for a single budget (MODEL.md §6.G): the cap holds exactly as long as the true delay and DB/client
 ratio stay within the bounds the center assumes. When they do not, most budgets overspend a little,
@@ -343,22 +345,37 @@ because each one runs into its cap at its end.
 
 ### E. Number of budgets (world: default)
 
-| variant | weighted % | worst % | grants/min |
-|---|---|---|---|
-| 10 budgets | 99.93 | 97.46 | 10.4 |
-| 20 budgets | 99.91 | 94.30 | 20.8 |
-| 50 budgets | 99.90 | 95.04 | 51.9 |
+| variant | weighted % | worst % | grants/min | messages/min |
+|---|---|---|---|---|
+| 10 budgets | 99.93 | 97.43 | 10.8 | 7.4 |
+| 20 budgets | 99.91 | 94.29 | 22.0 | 10.5 |
+| 50 budgets | 99.90 | 95.03 | 56.5 | 14.3 |
 
-Quality does not depend on the number of budgets, but the grant traffic grows linearly with it:
-every client holds a grant for every active budget. Bundling all of a client's grants into one
-message per renewal would keep the message rate per client constant.
+Quality does not depend on the number of budgets. The grant count grows linearly with it, since
+every client holds a grant for every active budget, but with bundling (§4.4, table F) the request
+messages grow much more slowly: 5 × the budgets, 2 × the messages.
+
+### F. Bundling grant requests per client
+
+| variant | default (20 budgets): grants/min | messages/min | 50 budgets: grants/min | messages/min |
+|---|---|---|---|---|
+| no bundling | 20.8 | 20.9 | 51.9 | 52.0 |
+| **bundle within 5 min (default)** | 22.0 | 10.5 | 56.5 | 14.3 |
+| bundle within 10 min | 25.9 | 9.3 | 71.7 | 13.1 |
+| bundle within 30 min | 38.9 | 8.9 | 121.6 | 12.9 |
+
+Spend is the same in every row (99.90–99.92 % weighted), and no budget exceeded its cap.
+
+- **A 5 min window halves the messages** with 20 budgets and cuts them to less than a third with 50, for 6–9 % more grants (renewed a few minutes early).
+- **Larger windows do not pay.** They save few further messages but renew grants far too early: with 50 budgets and a 30 min window, 2.3 × the grants.
+- **About one message per client every 3–5 min** remains with any window. Grants near a budget's end are short (5–15 min), and re-grants after a demand rise come at any time, so a client keeps sending some messages of its own.
 
 ## 7. Recommended policy
 
 1. **One hard-cap invariant per budget**, exactly as for a single budget. Independence makes this both necessary and sufficient.
 2. **One shared daily demand shape**, learned from all budgets on the same clients, with a per-budget level. New and short budgets pace with it from their first minute.
 3. **Grant granularity relative to the budget**, not a fixed amount.
-4. **Bundle grants per client** when many budgets are active.
+4. **Bundle a client's grant requests**, renewing in one message every grant due within the next 5 min.
 5. Everything else per budget, as in MODEL.md §7: adaptive pacing, finish buffer and haircut, grants shrinking toward the budget's end, re-grant and partial return.
 
 ## 8. Limitations and next steps
@@ -368,12 +385,12 @@ message per renewal would keep the message rate per client constant.
 - **Budgets with different client mixes.** Here every budget runs on every client with the same weights. If budgets targeted different subsets of clients, each would need the shape of its own subset, or a per-client shape combined by the budget's weights.
 - **Competing budgets.** Budgets do not compete for the same demand here: each has its own. If one unit of demand could be paid by several budgets, the center would also have to choose which budget pays.
 - **Changes mid-flight** (raising, cutting, pausing a budget) are not modelled. Cutting $B_m$ below $Y_m + E_m$ would need the same care as a transfer in the multi-center design: never below what is committed.
-- **Grant traffic** is counted, not limited (table E).
+- **Grant traffic** is counted, not limited. Bundling keeps the messages down, but the center still makes one grant decision per budget and client (table F).
 
 ## 9. Reproduce
 
 ```sh
 julia scripts/budgets_run.jl                                 # one portfolio, isolated vs shared → out/budgets_*.csv
 julia --project=plots plots/plot_budgets.jl                  # → out/budgets.png
-julia -t auto scripts/budgets_mc.jl 20 > out/budgets.md      # tables A–E (~1 min on 10 threads)
+julia -t auto scripts/budgets_mc.jl 20 > out/budgets.md      # tables A–F (~4 min on 10 threads)
 ```

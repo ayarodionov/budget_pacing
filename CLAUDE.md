@@ -28,7 +28,7 @@ julia scripts/compare_pacing.jl                              # strategies on one
 julia --project=plots plots/plot_pacing.jl                   # → out/pacing.png
 julia scripts/budgets_run.jl                                 # one portfolio → out/budgets_{isolated,shared}.csv
 julia --project=plots plots/plot_budgets.jl                  # → out/budgets.png
-julia -t auto scripts/budgets_mc.jl 20 > out/budgets.md      # BUDGETS.md tables A–E (~1 min)
+julia -t auto scripts/budgets_mc.jl 20 > out/budgets.md      # BUDGETS.md tables A–F (~4 min)
 ```
 
 The trailing number is the count of seeds per scenario. Use `-t auto`, because `run_mc` uses
@@ -63,7 +63,10 @@ behaviour, rerun the matching script and update the numbers in the docs.
   once per step for all budgets) and one `Site` per budget, and step each site only between its
   start and end. With `profile = :shared`, all centers point to one `SharedProfile`
   (`update_shared!` in `model.jl`): a common daily shape, each budget with its own `level`.
-  `aggregate_budgets` pools budgets over runs; "achieved" = spend / min(B_m, all demand).
+  After each step, bundling (`bundle_window`) lets a client that sent a request also renew its
+  other grants due soon, in the same message (`due_within`); `stats` counts requests and messages.
+  `run_mc` returns `(budgets, stats)` per run; `aggregate_budgets` pools budgets over runs;
+  "achieved" = spend / min(B_m, all demand).
 - `src/analysis.jl`: `run_mc` (threaded over seeds; `budgets.jl` adds a `PortfolioConfig` method),
   `with(cfg; field=value)` (copy with overrides for `Config` or `PortfolioConfig`, errors on an
   unknown field), `aggregate`, the table printers, and a dependency-free `write_csv`.

@@ -54,15 +54,15 @@ end
 
 function detail(title, world, rows)
     println("\n### $title\n\n_$RUNS portfolios per row_\n")
-    println("| variant | weighted % | mean % | 5th pct % | worst % | ≥ 99.9 % | over cap | max over (‰ of B_m) | grants/min |")
-    println("|---|---|---|---|---|---|---|---|---|")
+    println("| variant | weighted % | mean % | 5th pct % | worst % | ≥ 99.9 % | over cap | max over (‰ of B_m) | grants/min | messages/min |")
+    println("|---|---|---|---|---|---|---|---|---|---|")
     for (name, kw) in rows
         pc = with(world; kw...)
         r = run_mc(pc; seeds = 1:RUNS)
         a = aggregate_budgets(r)
-        gpm = sum(b.grants for run in r for b in run) / length(r) / pc.horizon
-        @printf("| %s | %.2f | %.2f | %.2f | %.2f | %.0f %% | %d | %.2f | %.1f |\n", name, 100a.weighted, 100a.mean,
-                100a.p05, 100a.worst, 100a.full, a.over, 1000a.over_max, gpm)
+        st(f) = sum(getfield(x.stats, f) for x in r) / length(r)
+        @printf("| %s | %.2f | %.2f | %.2f | %.2f | %.0f %% | %d | %.2f | %.1f | %.1f |\n", name, 100a.weighted, 100a.mean,
+                100a.p05, 100a.worst, 100a.full, a.over, 1000a.over_max, st(:grants_per_min), st(:messages_per_min))
     end
 end
 
@@ -82,3 +82,12 @@ detail("E. Number of budgets (world: default)", base, [
     "20 budgets" => (;),
     "50 budgets" => (n_budgets = 50,),
 ])
+
+for (wname, w) in ["default" => base, "50 budgets" => with(base; n_budgets = 50)]
+    detail("F. Bundling grant requests per client (world: $wname)", w, [
+        "no bundling"               => (bundle_window = 0.0,),
+        "bundle within 5 min (default)" => (;),
+        "bundle within 10 min"      => (bundle_window = 10.0,),
+        "bundle within 30 min"      => (bundle_window = 30.0,),
+    ])
+end

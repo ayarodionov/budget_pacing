@@ -21,6 +21,8 @@ Base.@kwdef struct PortfolioConfig
     budgets::Vector{Any} = []        # explicit (B, start, length, ratio) [min]; replaces the random draw
     profile::Symbol = :shared        # :shared | :isolated
     scale_min_grant::Bool = true     # min_grant scales with the budget (base.min_grant × B_m / base.B)
+    bundle_window::Float64 = 5.0     # a client that sends a request also renews its other grants that would
+                                     # need renewal within this window, in the same message [min] (0 = no bundling)
 end
 
 function validate(pc::PortfolioConfig)
@@ -44,12 +46,20 @@ function draw_budgets(pc::PortfolioConfig, rng)
     end
 end
 
+"Client `c` of site `s` would need a new grant within `window` minutes (index `now`)."
+function due_within(s::Site, c::Client, now, window)
+    c.grant == 0 && return true
+    g = s.center.grants[c.grant]
+    (g.expiry_idx - now) * s.cfg.dt <= window || g.amount - c.used <= g.rate * window
+end
+
 """
-    simulate_budgets(pc; record=false) -> (budgets, sites)
+    simulate_budgets(pc; record=false) -> (budgets, sites, stats)
 
 `budgets` is a vector of NamedTuples, one per budget: its parameters and the single-center
 summary of how it was spent (`spend_ratio` = spend / B_m, `achieved` = spend / min(B_m, all
-its demand)).
+its demand)). `stats` counts the clients' grant requests and the messages that carry them: one
+per request without bundling, one per client and minute with bundling.
 """
 function simulate_budgets(pc::PortfolioConfig; record::Bool = false)
     validate(pc)
@@ -66,11 +76,36 @@ function simulate_budgets(pc::PortfolioConfig; record::Bool = false)
         Site(cfg; t0 = start, world, shared, record)
     end
     first_step = [round(Int, start / dt) for (_, start, _, _) in specs]
+    requests = messages = early = 0
 
     for a in 1:round(Int, pc.horizon / dt)
+        active = Int[]
         for (m, s) in enumerate(sites)
             n = a - first_step[m]
-            1 <= n <= s.N && step!(s, n)
+            1 <= n <= s.N || continue
+            step!(s, n)
+            push!(active, m)
+        end
+        # requests sent this step, per client; with bundling, add the grants due soon to the same message
+        for i in 1:nc
+            reqs = 0
+            for m in active
+                s = sites[m]
+                s.clients[i].request_idx == a - first_step[m] + 1 && (reqs += 1)
+            end
+            if reqs > 0 && pc.bundle_window > 0
+                for m in active
+                    s, now = sites[m], a - first_step[m] + 1
+                    c = s.clients[i]
+                    if c.request_idx == 0 && now <= s.N && due_within(s, c, now, pc.bundle_window)
+                        c.request_idx = now       # renew early, in the same message
+                        reqs += 1
+                        early += 1
+                    end
+                end
+            end
+            requests += reqs
+            messages += pc.bundle_window > 0 ? (reqs > 0) : reqs
         end
         @. world.logdrift += -world.logdrift * dt / b.drift_tau + b.drift_sigma * sqrt(2dt / b.drift_tau) * randn(rng)
     end
@@ -85,16 +120,20 @@ function simulate_budgets(pc::PortfolioConfig; record::Bool = false)
          # how many other budgets were already running when it started (they taught the shared profile)
          started_after = count(k -> k != m && specs[k][2] < start, eachindex(specs)))
     end
-    budgets, sites
+    stats = (requests_per_min = requests / pc.horizon, messages_per_min = messages / pc.horizon,
+             early_per_min = early / pc.horizon,
+             grants_per_min = sum(s.m.issued for s in sites) / pc.horizon)
+    budgets, sites, stats
 end
 
 """
-    run_mc(pc::PortfolioConfig; seeds=1:20) -> Vector of budget vectors (one per run)
+    run_mc(pc::PortfolioConfig; seeds=1:20) -> Vector of (budgets, stats), one per run
 """
 function run_mc(pc::PortfolioConfig; seeds = 1:20)
     results = Vector{Any}(undef, length(seeds))
     Threads.@threads for j in eachindex(seeds)
-        results[j] = first(simulate_budgets(with(pc; base = with(pc.base; seed = seeds[j]))))
+        budgets, _, stats = simulate_budgets(with(pc; base = with(pc.base; seed = seeds[j])))
+        results[j] = (; budgets, stats)
     end
     results
 end
@@ -106,7 +145,7 @@ Statistics over all budgets of all runs that pass `select`. `achieved` is what a
 of what it could spend, min(B_m, all its demand); `weighted` weights budgets by that amount.
 """
 function aggregate_budgets(results; select = b -> true)
-    bs = [b for r in results for b in r if select(b)]
+    bs = [b for r in results for b in (r isa NamedTuple ? r.budgets : r) if select(b)]
     isempty(bs) && return nothing
     ach = sort([b.achieved for b in bs])
     cap = [b.B * min(1.0, b.possible) for b in bs]
