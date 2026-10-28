@@ -8,6 +8,7 @@ is *not* the sum of client-counted spend (ratio β, e.g. fees).
 
 Full model description, strategy comparison and results: **[MODEL.md](MODEL.md)**.
 How clients and the center work under each pacing strategy: **[PACING.md](PACING.md)**.
+Many independent budgets (own size, start, end and demand) on the same clients: **[BUDGETS.md](BUDGETS.md)**.
 
 ## Run
 
@@ -17,6 +18,9 @@ julia -t auto scripts/sweep.jl 40             # Monte Carlo over scenarios → t
 julia --project=plots plots/plot.jl           # out/run.csv → out/run.png  (first time: Pkg.instantiate)
 julia scripts/compare_pacing.jl               # strategies side by side → out/pacing_*.csv
 julia --project=plots plots/plot_pacing.jl    # → out/pacing.png
+julia scripts/budgets_run.jl                  # many budgets on the same clients → out/budgets_*.csv
+julia --project=plots plots/plot_budgets.jl   # → out/budgets.png
+julia -t auto scripts/budgets_mc.jl 20 > out/budgets.md   # many-budget Monte Carlo
 ```
 
 The core has no dependencies (stdlib only). Change parameters with `Config(; ...)` or

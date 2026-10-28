@@ -30,6 +30,28 @@ mutable struct Client
     lam_own::Float64   # client's own EWMA of its demand rate
 end
 
+"""
+Daily demand shape shared by budgets that run through the same clients. Every budget keeps its
+own scale (its `level`); the shape is learned from all active budgets together, so a budget that
+starts late can use it from its first minute.
+"""
+mutable struct SharedProfile
+    profile::Vector{Float64}  # demand rate / budget scale, per bin of the day (absolute time)
+    seen::Vector{Bool}
+    cur_bin::Int
+    acc_d::Float64            # Σ demand rate of the contributing budgets in the current bin
+    acc_s::Float64            # Σ their scales
+end
+
+SharedProfile(cfg::Config) = SharedProfile(zeros(cfg.profile_bins), falses(cfg.profile_bins), 0, 0.0, 0.0)
+
+"Client traits shared by several budgets: sizes, daily phases and the common slow drift."
+mutable struct World
+    w::Vector{Float64}        # client size weights, Σ = 1
+    phase::Vector{Float64}    # daily phase shift [min]
+    logdrift::Vector{Float64} # OU state of slow drift, advanced once per step for all budgets
+end
+
 mutable struct Center
     grants::Vector{Grant}
     unsettled::Vector{Int}    # grants that may still add spend not yet visible in Y
@@ -47,11 +69,13 @@ mutable struct Center
     bin_acc::Float64
     bin_cnt::Int
     level::Float64            # current demand / learned profile (catches unknown weekly effects)
+    shared::Union{Nothing,SharedProfile}   # nothing: learn its own profile
+    level_init::Bool          # shared profile: level has been set from a first observation
 end
 
-Center(cfg::Config) = Center(Grant[], Int[], zeros(cfg.n_clients), 0.0, false,
+Center(cfg::Config; shared = nothing) = Center(Grant[], Int[], zeros(cfg.n_clients), 0.0, false,
                              1.0, 0.0, 0.0, 0.0, 0.0,
-                             zeros(cfg.profile_bins), falses(cfg.profile_bins), 0, 0.0, 0, 1.0)
+                             zeros(cfg.profile_bins), falses(cfg.profile_bins), 0, 0.0, 0, 1.0, shared, false)
 
 # ---------------------------------------------------------------- world
 
@@ -104,6 +128,7 @@ function update_demand!(c::Center, cfg::Config, d::AbstractVector, t)
         c.lam_long += cfg.dt / DAY * (tot - c.lam_long)
     end
     b = bin_of(cfg, t)
+    c.shared === nothing || return update_shared!(c, cfg, b, tot)
     if cfg.level_minutes > 0 && c.seen[b] && c.profile[b] > 0
         c.level += cfg.dt / cfg.level_minutes * (tot / c.profile[b] - c.level)
     end
@@ -117,6 +142,30 @@ function update_demand!(c::Center, cfg::Config, d::AbstractVector, t)
     end
     c.bin_acc += tot
     c.bin_cnt += 1
+    nothing
+end
+
+"Shared profile: update this budget's scale against the shared shape, and add to the shape."
+function update_shared!(c::Center, cfg::Config, b, tot)
+    sp = c.shared
+    if sp.seen[b] && sp.profile[b] > 0
+        x = tot / sp.profile[b]
+        if !c.level_init
+            c.level, c.level_init = x, true
+        elseif cfg.level_minutes > 0
+            c.level += cfg.dt / cfg.level_minutes * (x - c.level)
+        end
+    end
+    if b != sp.cur_bin                    # first contribution to a new bin: close the previous one
+        if sp.cur_bin != 0 && sp.acc_s > 0
+            p, v = sp.cur_bin, sp.acc_d / sp.acc_s
+            sp.profile[p] = sp.seen[p] ? (1 - cfg.profile_alpha) * sp.profile[p] + cfg.profile_alpha * v : v
+            sp.seen[p] = true
+        end
+        sp.cur_bin, sp.acc_d, sp.acc_s = b, 0.0, 0.0
+    end
+    sp.acc_d += tot
+    sp.acc_s += c.level_init ? c.level : c.lam_long
     nothing
 end
 
@@ -137,7 +186,12 @@ function remaining_demand(c::Center, cfg::Config, t, T)
     while t < T - 1e-9
         b = bin_of(cfg, t)
         tend = min((floor(t / binlen) + 1) * binlen, T)
-        total += (c.seen[b] ? c.level * c.profile[b] : c.lam_long) * (tend - t)
+        rate = if c.shared === nothing
+            c.seen[b] ? c.level * c.profile[b] : c.lam_long
+        else
+            c.level_init && c.shared.seen[b] ? c.level * c.shared.profile[b] : c.lam_long
+        end
+        total += rate * (tend - t)
         t = tend
     end
     total
